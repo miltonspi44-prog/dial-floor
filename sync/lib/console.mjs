@@ -2,7 +2,7 @@
 // Session auth with the console password; keeps the PHP session cookie.
 // Respects the console's login lockout (10 fails / 15 min) — one attempt, no retry loops.
 
-const BASE = (process.env.CONSOLE_URL ?? '').replace(/\/$/, '')
+const BASE = (process.env.CONSOLE_URL ?? 'https://leads.sedsolutions.online').replace(/\/$/, '')
 const PASSWORD = process.env.CONSOLE_PASSWORD ?? ''
 
 let cookie = null
@@ -36,11 +36,16 @@ export async function ensureAuth() {
   if (!me.authed) await login()
 }
 
+/** One page of dialable leads: { total, leads }. */
+export async function leadsPage(limit, offset) {
+  return api('leads', { params: { dialable: 1, limit, offset } })
+}
+
 /** Page through dialable leads. Yields arrays of rows. */
 export async function* dialableLeads(pageSize = 500) {
   let offset = 0
   for (;;) {
-    const { total, leads } = await api('leads', { params: { dialable: 1, limit: pageSize, offset } })
+    const { total, leads } = await leadsPage(pageSize, offset)
     if (!leads?.length) return
     yield leads
     offset += leads.length

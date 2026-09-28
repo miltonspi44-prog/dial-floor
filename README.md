@@ -43,7 +43,8 @@ project's public URL and publishable key.
    subscription pointing at the deployed function, secret into the function's
    env).
 3. **Lead sync** — `cd sync && npm install`, copy `.env.example` → `.env`, fill
-   the console password and the Supabase service key, then `npm run pull`.
+   the console password and the Supabase service key, then `npm run preview`
+   (a read-only look at what would come in) and `npm run pull`.
    (No console access yet? Export a CSV from the console and
    `npm run import -- file.csv`.)
 4. **Phase 0 checks** — run `docs/PHASE0-CHECKLIST.md` top to bottom (15
