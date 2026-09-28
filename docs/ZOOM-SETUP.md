@@ -55,8 +55,8 @@ Admin portal → Account Settings → **Zoom Phone** → *Call summary with AI*:
 ## Notes
 
 - The webhook function verifies Zoom's HMAC signature on every event and
-  ignores duplicates. Until the secret is set, events are rejected — set the
-  secret before validating.
+  ignores duplicates. Until the secret is set it answers `503` to everything,
+  Zoom's validation included — set the secret before clicking Validate.
 - Your account shape (free Workplace base + paid Phone licenses): S2S app
   creation shows no paid gate in Zoom's docs; if the Phone API unexpectedly
   refuses (`GET /phone/users` erroring about account type), the fix is one paid

@@ -10,6 +10,7 @@ const REASON_LABEL: Record<string, string> = {
   callback_due: 'CALLBACK DUE — they asked for this call',
   list: 'From your list',
   pool: 'From the pool',
+  resume: 'CALL STILL OPEN — log how it went',
 }
 
 export default function Dial({ profile }: { profile: Profile | null }) {
@@ -36,11 +37,16 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   }, [profile])
 
   const applyResult = useCallback((res: NextLeadResult | null) => {
-    setAttemptId(null); setPopup(false); setVmAsk(false); stopTimer()
+    setPopup(false); setVmAsk(false); stopTimer()
+    setWs(res)
     if (!res || res.empty || res.error || !res.lead) {
-      setWs(res); setPhase('empty')
+      setAttemptId(null); setPhase('empty')
+    } else if (res.attempt_id) {
+      // reloaded mid-call: pick the open call back up so its outcome gets logged
+      setAttemptId(res.attempt_id); setPhase('dialing')
+      startTimer(res.clicked_at ? Date.parse(res.clicked_at) : Date.now())
     } else {
-      setWs(res); setPhase('ready')
+      setAttemptId(null); setPhase('ready')
     }
   }, [])
 
@@ -53,8 +59,9 @@ export default function Dial({ profile }: { profile: Profile | null }) {
 
   useEffect(() => {
     loadNext()
+    refreshToday()
     supabase.rpc('heartbeat', { p_status: 'idle' }).then(() => {})
-  }, [loadNext])
+  }, [loadNext, refreshToday])
 
   function setToastMsg(m: string) {
     setToast(m)
@@ -63,6 +70,12 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   function stopTimer() {
     if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null }
     setCallSec(0)
+  }
+  function startTimer(t0: number) {
+    stopTimer()
+    const tick = () => setCallSec(Math.max(0, Math.round((Date.now() - t0) / 1000)))
+    tick()
+    timerRef.current = window.setInterval(tick, 1000)
   }
 
   async function dial() {
@@ -73,9 +86,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     if (error) { setToastMsg(error.message); loadNext(); return }
     setAttemptId((data as { attempt_id: number }).attempt_id)
     setPhase('dialing')
-    stopTimer()
-    const t0 = Date.now()
-    timerRef.current = window.setInterval(() => setCallSec(Math.round((Date.now() - t0) / 1000)), 1000)
+    startTimer(Date.now())
     zoomDial(lead.phone_norm)
   }
 
@@ -94,9 +105,11 @@ export default function Dial({ profile }: { profile: Profile | null }) {
 
   async function skip() {
     if (!lead || busy) return
-    if (attemptId) { await log('skipped'); return }
-    await supabase.rpc('release_lead', { p_lead_id: lead.id })
-    loadNext()
+    setBusy(true)
+    const { data, error } = await supabase.rpc('skip_lead', { p_lead_id: lead.id })
+    setBusy(false)
+    if (error) { setToastMsg(error.message); return }
+    applyResult((data as { next: NextLeadResult }).next)
   }
 
   // global keys (popup handles its own while open)
@@ -236,7 +249,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
               <h4>Business facts</h4>
               <div className="factrow"><span>Rating</span><span className="v">{lead.rating ?? '—'} ({lead.review_count ?? 0} reviews)</span></div>
               <div className="factrow"><span>Website</span><span className="v">{lead.website_type === 'none' ? 'NONE' : (lead.platform_detail ?? lead.platform ?? lead.website_type ?? '—')}</span></div>
-              <div className="factrow"><span>Line type</span><span className="v">{(lead as { phone_type?: string }).phone_type ?? '—'}</span></div>
+              <div className="factrow"><span>Line type</span><span className="v">{lead.phone_type ?? '—'}</span></div>
               <div className="factrow"><span>Tier / score</span><span className="v">{lead.tier ?? '—'} / {lead.score ?? '—'}</span></div>
               <div className="factrow"><span>Trades</span><span className="v">{(lead.categories ?? [lead.category]).filter(Boolean).join(', ') || '—'}</span></div>
               <div className="actionrow" style={{ marginTop: 6 }}>
@@ -265,6 +278,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       {popup && lead && (
         <DispositionPopup
           leadName={lead.name}
+          tz={lead.tz}
           onPick={(code, args) => log(code, args)}
           onClose={() => setPopup(false)}
         />

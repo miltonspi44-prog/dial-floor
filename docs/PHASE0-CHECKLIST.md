@@ -16,6 +16,12 @@ one row with your own cell number), press **D**.
 second PC on the same Zoom login at the same time — both attempts must match to
 the right agent. (You already know simultaneous calls work — this proves the
 data side agrees.)
+While a call is up, the Floor tab on the other PC must show that agent as
+**dialing** (not offline). Back on the Dial screen, press **S** on a lead
+before dialing: a different lead must load. Log a test callback for tomorrow
+10:00 — the form shows the lead's own local time, and the manager's Floor tab
+lists it at the same moment in the viewer's timezone (a 10:00 New York callback
+shows as 7:00 AM on a Pacific PC).
 
 ## 3 · The AI-summary silence test (5 min) — decides Fork 1-B
 Recording policies OFF account-wide (they already are). Admin → Zoom Phone →

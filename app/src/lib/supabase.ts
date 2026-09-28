@@ -16,6 +16,21 @@ export function fmtPhone(p: string | null | undefined): string {
   return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
 }
 
+/** Mark the agent offline as the page goes away. keepalive lets the request
+ *  outlive the page, which a normal supabase.rpc() call does not. */
+export function heartbeatOffline(accessToken: string) {
+  fetch(`${import.meta.env.VITE_SUPABASE_URL}/rest/v1/rpc/heartbeat`, {
+    method: 'POST',
+    keepalive: true,
+    headers: {
+      apikey: import.meta.env.VITE_SUPABASE_KEY as string,
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ p_status: 'offline' }),
+  }).catch(() => {})
+}
+
 /** Launch the Zoom desktop client dialing this number (Fork 2-A). */
 export function zoomDial(phoneNorm: string) {
   window.location.href = `zoomphonecall://+1${phoneNorm}`

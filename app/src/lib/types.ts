@@ -8,7 +8,7 @@ export interface Profile {
 }
 
 export interface Workspace {
-  reason: 'callback_due' | 'list' | 'pool'
+  reason: 'callback_due' | 'list' | 'pool' | 'resume'
   lead: LeadRow
   state: Record<string, unknown>
   intents: { key: string; label: string; confidence: number }[]
@@ -20,6 +20,7 @@ export interface LeadRow {
   name: string
   phone_norm: string
   phone_display: string | null
+  phone_type: string | null
   category: string | null
   categories: string[] | null
   tier: string | null
@@ -48,6 +49,9 @@ export interface NextLeadResult {
   state?: Record<string, unknown>
   intents?: Workspace['intents']
   history?: Workspace['history']
+  /** Set with reason 'resume': the call this agent started and never logged. */
+  attempt_id?: number
+  clicked_at?: string
 }
 
 export interface FloorRow {

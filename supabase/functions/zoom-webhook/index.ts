@@ -30,6 +30,10 @@ function norm(p?: string | null): string {
 }
 
 Deno.serve(async (req) => {
+  // Nothing can be validated or verified until the secret is set (an empty
+  // HMAC key throws, which used to surface as a 500 on every request)
+  if (!SECRET) return new Response("ZOOM_WEBHOOK_SECRET_TOKEN is not set", { status: 503 });
+
   const body = await req.text();
   let evt: any;
   try { evt = JSON.parse(body); } catch { return new Response("bad json", { status: 400 }); }
@@ -44,7 +48,7 @@ Deno.serve(async (req) => {
   const ts = req.headers.get("x-zm-request-timestamp") ?? "";
   const sig = req.headers.get("x-zm-signature") ?? "";
   const expect = "v0=" + await hmacHex(SECRET, `v0:${ts}:${body}`);
-  if (!SECRET || sig !== expect) return new Response("bad signature", { status: 401 });
+  if (sig !== expect) return new Response("bad signature", { status: 401 });
 
   // Dedupe on Zoom's tracking id (fallback: event + ts + call id)
   const eventId = req.headers.get("x-zm-trackingid") ??
@@ -57,7 +61,9 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (insErr) {
     // duplicate delivery — ack so Zoom stops retrying
-    return new Response("dup", { status: 200 });
+    if (insErr.code === "23505") return new Response("dup", { status: 200 });
+    // anything else: fail so Zoom retries, rather than dropping the event
+    return new Response("store failed", { status: 500 });
   }
 
   try {
@@ -86,20 +92,22 @@ async function process(evt: any) {
     const ansT = obj.answer_start_time ? Date.parse(obj.answer_start_time) : null;
     const duration = ansT ? Math.max(0, Math.round((endT - ansT) / 1000)) : 0;
 
-    const { data: leads } = await supa.from("leads").select("id").eq("phone_norm", callee).limit(1);
+    // Every lead record with this number: the scrape can list one business twice
+    const { data: leads, error: leadErr } = await supa.from("leads").select("id").eq("phone_norm", callee);
+    if (leadErr) throw leadErr;
     if (!leads?.length) return;
-    const leadId = leads[0].id;
 
-    // Latest unmatched attempt for this lead in the last 20 minutes
+    // Latest unmatched attempt on any of them in the last 20 minutes
     const cutoff = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-    const { data: atts } = await supa
+    const { data: atts, error: attErr } = await supa
       .from("attempts")
       .select("id, disposition")
-      .eq("lead_id", leadId)
+      .in("lead_id", leads.map((l) => l.id))
       .eq("matched", false)
       .gte("clicked_at", cutoff)
       .order("clicked_at", { ascending: false })
       .limit(1);
+    if (attErr) throw attErr;
     if (!atts?.length) return;
     const att = atts[0];
 

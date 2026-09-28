@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import type { Session } from '@supabase/supabase-js'
-import { supabase } from './lib/supabase'
+import { supabase, heartbeatOffline } from './lib/supabase'
 import type { Profile } from './lib/types'
 import Login from './pages/Login'
 import Dial from './pages/Dial'
@@ -32,9 +32,11 @@ export default function App() {
 
   useEffect(() => {
     if (!session) return
-    const bye = () => { supabase.rpc('heartbeat', { p_status: 'offline' }) }
-    window.addEventListener('beforeunload', bye)
-    return () => window.removeEventListener('beforeunload', bye)
+    // pagehide, not beforeunload: opening zoomphonecall:// fires beforeunload
+    // without leaving the page, which marked every dialing agent offline.
+    const bye = () => heartbeatOffline(session.access_token)
+    window.addEventListener('pagehide', bye)
+    return () => window.removeEventListener('pagehide', bye)
   }, [session])
 
   if (!ready) return null
