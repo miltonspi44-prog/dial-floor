@@ -49,8 +49,9 @@ project's public URL and publishable key.
 4. **Phase 0 checks** — run `docs/PHASE0-CHECKLIST.md` top to bottom (15
    minutes of real calls). It settles the AI-summary silence question and
    proves attribution.
-5. **Deploy** — `docs/DEPLOY-HOSTINGER.md` puts the built app on your Hostinger
-   hosting as a static site at `https://dialer.sedsolutions.online`.
+5. **Deploy** — live at `https://dialer.sedsolutions.online`. Redeploy with
+   `cd app && npm run deploy` (needs `HOSTINGER_API_TOKEN`); details in
+   `docs/DEPLOY-HOSTINGER.md`.
 
 ## Daily operation
 
