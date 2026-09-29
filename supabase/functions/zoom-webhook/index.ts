@@ -87,9 +87,13 @@ async function process(evt: any) {
     const callerNum = norm(obj.caller?.phone_number ?? obj.caller?.did_number);
     if (!callee) return;
 
-    const answered = !!obj.answer_start_time;
+    // Zoom's caller_ended events carry connected_start_time once the far end
+    // picks up (person, voicemail or auto-attendant); answer_start_time is the
+    // older name. Neither is present when the call rang out or was cancelled.
+    const answerAt = obj.connected_start_time ?? obj.answer_start_time ?? null;
+    const answered = !!answerAt;
     const endT = obj.call_end_time ? Date.parse(obj.call_end_time) : Date.now();
-    const ansT = obj.answer_start_time ? Date.parse(obj.answer_start_time) : null;
+    const ansT = answerAt ? Date.parse(answerAt) : null;
     const duration = ansT ? Math.max(0, Math.round((endT - ansT) / 1000)) : 0;
 
     // Every lead record with this number: the scrape can list one business twice
