@@ -266,6 +266,7 @@ begin
   perform t.fails('select public.build_workspace(1, ''peek'')', 'permission denied');
   perform t.fails('select public.bump_number_stats(''5555550000'', true)', 'permission denied');
   perform t.fails('select public.refresh_lead(1)', 'permission denied');
+  perform t.fails('select public.funnel(1)', 'permission denied');
 end $$;
 reset role;
 set role authenticated;
@@ -388,6 +389,52 @@ begin
   assert t.name(n) = 'X', format('X comes round again, got %s', t.name(n));
   assert n->'history'->0->>'ai_summary' = 'Owner wants a quote' and n->'history'->0->>'next_steps' = 'Call Friday',
     'the earlier call shows its summary';
+end $$;
+
+\echo '19 · Every dial records where it came from, and the funnel adds it all up (managers only)'
+select t.reset() \g /dev/null
+do $$
+declare att bigint; f jsonb; n jsonb; v_list bigint;
+begin
+  perform t.as_user('M');
+  v_list := (build_list('A''s list', t.uid('A'), '{}', 1)->>'list_id')::bigint;   -- just X
+  n := t.next('A');
+  assert n->>'reason' = 'list';
+  att := t.dial('A', 'X');
+  assert (select source = 'list' and list_id = v_list from attempts where id = att), 'a list dial records its list';
+  -- the call connected (as the webhook records it) and ended in a callback that is due now
+  update attempts set call_result = 'answered', duration_seconds = 90 where id = att;
+  perform t.log('A', att, 'callback', jsonb_build_object('due_at', now() - interval '1 minute'));
+  att := t.dial('A', 'X');
+  assert (select source = 'callback' and list_id is null from attempts where id = att), 'a due callback is recorded as one';
+  perform t.log('A', att, 'chance_website', '{"summary":"wants a site","rating":5}');
+  n := t.next('B');
+  assert n->>'reason' = 'pool';
+  att := t.dial('B', t.name(n));
+  assert (select source = 'pool' from attempts where id = att), 'a pool dial is recorded as one';
+  perform t.log('B', att, 'no_answer');
+
+  -- and one from three days ago
+  insert into attempts (lead_id, agent_id, clicked_at, source) values (t.lead('Z'), t.uid('B'), now() - interval '3 days', 'pool');
+
+  perform t.as_user('M');
+  f := public.funnel(1);
+  assert (f->'totals'->>'dials')::int = 3, format('3 dials, got %s', f->'totals');
+  -- the handoff call was never matched by Zoom, but a logged conversation was picked up
+  assert (f->'totals'->>'answered')::int = 2 and (f->'totals'->>'conversations')::int = 2
+     and (f->'totals'->>'handoffs')::int = 1 and (f->'totals'->>'talk_seconds')::int = 90,
+    format('answered 2, conversations 2, handoffs 1, 90 s talk; got %s', f->'totals');
+  assert jsonb_array_length(f->'by_agent') = 2, 'two agents dialed';
+  assert exists (select 1 from jsonb_array_elements(f->'by_source') s
+                  where s->>'source' = 'list' and s->>'list' = 'A''s list' and (s->>'dials')::int = 1),
+    format('by source: %s', f->'by_source');
+  assert exists (select 1 from jsonb_array_elements(f->'by_source') s
+                  where s->>'source' = 'callback' and (s->>'handoffs')::int = 1), 'the handoff came from the callback';
+  assert (select sum((h->>'dials')::int) from jsonb_array_elements(f->'by_hour') h) = 3, 'every dial lands in an hour';
+  assert (public.funnel(7)->'totals'->>'dials')::int = 4, 'the last 7 days include the older dial; today does not';
+
+  perform t.as_user('A');
+  perform t.fails('select public.funnel(7)', 'manager only');
 end $$;
 
 \echo 'all queue tests passed'

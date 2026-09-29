@@ -89,6 +89,26 @@ export interface FloorRow {
   last_seen: string | null
 }
 
+/** One slice of the funnel: every dial, the ones Zoom says were picked up,
+ *  the live conversations the agent logged, and the W/S handoffs. */
+export interface FunnelCounts {
+  dials: number
+  answered: number
+  conversations: number
+  handoffs: number
+}
+
+/** funnel(p_days) — the manager's Funnel page (F1). */
+export interface FunnelData {
+  from: string
+  days: number
+  totals: FunnelCounts & { callbacks: number; emails: number; talk_seconds: number }
+  by_agent: (FunnelCounts & { agent_id: string; name: string; days: number; talk_seconds: number })[]
+  by_source: (FunnelCounts & { source: 'callback' | 'list' | 'pool' | 'untracked'; list: string | null })[]
+  by_intent: (FunnelCounts & { intent: string; label: string })[]
+  by_hour: (FunnelCounts & { hour: number })[]
+}
+
 /** Daily per-agent targets from kpi_targets (F4). */
 export interface Targets {
   dials: number | null

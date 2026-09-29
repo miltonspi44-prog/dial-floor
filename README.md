@@ -71,9 +71,14 @@ project's public URL and publishable key.
   queue on its own when the rest is over.
 - The calling window is checked again at the moment of dialing, so a lead
   loaded just before its window closed can't be dialed after.
-- The floor board shows each agent's day against the targets in `kpi_targets`
-  (`update kpi_targets set target = 350 where metric = 'dials_per_day';`), and
-  a tab that has gone quiet for 5 minutes as offline.
+- The floor board shows each agent's day against the daily targets, and a tab
+  that has gone quiet for 5 minutes as offline. Managers set the targets at the
+  bottom of the **Funnel** tab.
+- The **Funnel** tab (managers) reads today, the last 7 or the last 30 days:
+  dials → picked up → conversations → handoffs, then the same split by agent
+  (per day, against the targets), by where the dial came from (callback, which
+  list, general pool), by intent, and by the lead's local hour. Dials made
+  before the funnel shipped show as "before tracking started" in the source table.
 - Roles and deactivation are the manager's: agents can't change their own.
   To take someone off the floor: `update profiles set active = false where id = '<uuid>';`
   (they're served nothing and can't dial; a call already open can still be logged).

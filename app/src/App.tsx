@@ -9,6 +9,7 @@ import Floor from './pages/Floor'
 import Lists from './pages/Lists'
 import Ledger from './pages/Ledger'
 import Emails from './pages/Emails'
+import Funnel from './pages/Funnel'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -52,7 +53,7 @@ export default function App() {
   if (!ready) return null
   if (!session) return <Login />
   // The manager routes only exist once the role is known; routing before that
-  // sent a manager who reloaded /lists (or /ledger, /emails) to /dial.
+  // sent a manager who reloaded /lists (or /funnel, /ledger, /emails) to /dial.
   if (profileFor !== session.user.id) return null
 
   const isManager = profile?.role === 'manager'
@@ -64,6 +65,7 @@ export default function App() {
         <nav>
           <NavLink to="/dial" className={({ isActive }) => (isActive ? 'active' : '')}>Dial</NavLink>
           <NavLink to="/floor" className={({ isActive }) => (isActive ? 'active' : '')}>Floor</NavLink>
+          {isManager && <NavLink to="/funnel" className={({ isActive }) => (isActive ? 'active' : '')}>Funnel</NavLink>}
           {isManager && <NavLink to="/lists" className={({ isActive }) => (isActive ? 'active' : '')}>Lists</NavLink>}
           {isManager && <NavLink to="/ledger" className={({ isActive }) => (isActive ? 'active' : '')}>Handoffs</NavLink>}
           {isManager && <NavLink to="/emails" className={({ isActive }) => (isActive ? 'active' : '')}>Emails</NavLink>}
@@ -76,6 +78,7 @@ export default function App() {
       <Routes>
         <Route path="/dial" element={<Dial profile={profile} />} />
         <Route path="/floor" element={<Floor isManager={isManager} />} />
+        {isManager && <Route path="/funnel" element={<Funnel />} />}
         {isManager && <Route path="/lists" element={<Lists />} />}
         {isManager && <Route path="/ledger" element={<Ledger />} />}
         {isManager && <Route path="/emails" element={<Emails />} />}
