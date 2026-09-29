@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { supabase, fmtPhone, zoomDial } from '../lib/supabase'
-import type { NextLeadResult, Profile } from '../lib/types'
+import { supabase, fmtPhone, zoomDial, loadTargets } from '../lib/supabase'
+import type { LeadRow, NextLeadResult, Profile, Targets } from '../lib/types'
 import DispositionPopup from '../components/DispositionPopup'
 import Battlecards from '../components/Battlecards'
 
@@ -13,6 +13,15 @@ const REASON_LABEL: Record<string, string> = {
   resume: 'CALL STILL OPEN — log how it went',
 }
 
+function addressLine(l: LeadRow): string {
+  if (l.address) return l.address
+  return [l.addr_city, [l.addr_state, l.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
+}
+
+function Stat({ label, value, target }: { label: string; value: number; target: number | null | undefined }) {
+  return <span className="statchip">{label} <b>{value}</b>{target ? <span className="of"> / {target}</span> : null}</span>
+}
+
 export default function Dial({ profile }: { profile: Profile | null }) {
   const [ws, setWs] = useState<NextLeadResult | null>(null)
   const [phase, setPhase] = useState<Phase>('loading')
@@ -21,6 +30,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   const [vmAsk, setVmAsk] = useState(false)
   const [callSec, setCallSec] = useState(0)
   const [today, setToday] = useState<{ dials: number; connects: number; handoffs: number } | null>(null)
+  const [targets, setTargets] = useState<Targets | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const timerRef = useRef<number | null>(null)
@@ -62,6 +72,8 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     refreshToday()
     supabase.rpc('heartbeat', { p_status: 'idle' }).then(() => {})
   }, [loadNext, refreshToday])
+
+  useEffect(() => { loadTargets().then(setTargets) }, [])
 
   function setToastMsg(m: string) {
     setToast(m)
@@ -158,9 +170,9 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     <div className="page">
       <div className="actionrow" style={{ marginBottom: 12 }}>
         <div className="statchips">
-          <span className="statchip">Dials <b>{today?.dials ?? 0}</b></span>
-          <span className="statchip">Connects <b>{today?.connects ?? 0}</b></span>
-          <span className="statchip">Handoffs <b>{today?.handoffs ?? 0}</b></span>
+          <Stat label="Dials" value={today?.dials ?? 0} target={targets?.dials} />
+          <Stat label="Connects" value={today?.connects ?? 0} target={targets?.connects} />
+          <Stat label="Handoffs" value={today?.handoffs ?? 0} target={targets?.handoffs} />
         </div>
       </div>
 
@@ -247,6 +259,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
             </div>
             <div className="card">
               <h4>Business facts</h4>
+              <div className="factrow"><span>Address</span><span className="v">{addressLine(lead) || '—'}</span></div>
               <div className="factrow"><span>Rating</span><span className="v">{lead.rating ?? '—'} ({lead.review_count ?? 0} reviews)</span></div>
               <div className="factrow"><span>Website</span><span className="v">{lead.website_type === 'none' ? 'NONE' : (lead.platform_detail ?? lead.platform ?? lead.website_type ?? '—')}</span></div>
               <div className="factrow"><span>Line type</span><span className="v">{lead.phone_type ?? '—'}</span></div>

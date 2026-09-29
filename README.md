@@ -67,6 +67,16 @@ project's public URL and publishable key.
 - Callbacks are entered on the lead's own clock. Unanswered, they come back an
   hour later, up to 3 tries; then they're marked missed and the lead rejoins
   the queue.
+- A lead resting after "not interested" (or a language barrier) rejoins the
+  queue on its own when the rest is over.
+- The calling window is checked again at the moment of dialing, so a lead
+  loaded just before its window closed can't be dialed after.
+- The floor board shows each agent's day against the targets in `kpi_targets`
+  (`update kpi_targets set target = 350 where metric = 'dials_per_day';`), and
+  a tab that has gone quiet for 5 minutes as offline.
+- Roles and deactivation are the manager's: agents can't change their own.
+  To take someone off the floor: `update profiles set active = false where id = '<uuid>';`
+  (they're served nothing and can't dial; a call already open can still be logged).
 - The sync loop (`cd sync && npm run loop`) keeps leads flowing in and statuses
   flowing back. Run it on any always-on PC (Task Scheduler recipe in the
   console's own DEPLOY.md works the same here).
@@ -89,4 +99,5 @@ Stored in `app_settings`; change them in the Supabase SQL editor, e.g.
 | `reclaim_minutes` | `30` | An abandoned in-progress lead is reclaimed after this long |
 | `allow_general_pool` | `true` | Serve the general pool once lists and callbacks are empty |
 | `business_tz` | `"America/Los_Angeles"` | Timezone of the business day behind "today" counts and daily caps |
+| `spam_alert_drop_pts` | `10` | A number whose connect rate drops this many points week over week is flagged on the floor board |
 | `ai_summaries_enabled` | `false` | Fork 1-B: attach Zoom AI summaries (only after the silence test) |

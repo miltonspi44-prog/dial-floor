@@ -13,6 +13,7 @@ import Emails from './pages/Emails'
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [profileFor, setProfileFor] = useState<string | null>(null) // user id the profile was fetched for
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
@@ -25,9 +26,18 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!session) { setProfile(null); return }
-    supabase.from('profiles').select('*').eq('id', session.user.id).single()
-      .then(({ data }) => setProfile(data as Profile | null))
+    if (!session) { setProfile(null); setProfileFor(null); return }
+    const uid = session.user.id
+    supabase.from('profiles').select('*').eq('id', uid).single()
+      .then(({ data }) => { setProfile(data as Profile | null); setProfileFor(uid) })
+  }, [session])
+
+  // "still here" every minute: a tab that crashed or lost its connection stops,
+  // and the floor board shows that agent offline instead of dialing forever
+  useEffect(() => {
+    if (!session) return
+    const iv = window.setInterval(() => { supabase.rpc('heartbeat', { p_status: 'ping' }).then(() => {}) }, 60_000)
+    return () => window.clearInterval(iv)
   }, [session])
 
   useEffect(() => {
@@ -41,6 +51,9 @@ export default function App() {
 
   if (!ready) return null
   if (!session) return <Login />
+  // The manager routes only exist once the role is known; routing before that
+  // sent a manager who reloaded /lists (or /ledger, /emails) to /dial.
+  if (profileFor !== session.user.id) return null
 
   const isManager = profile?.role === 'manager'
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { supabase, fmtPhone } from '../lib/supabase'
-import type { FloorRow } from '../lib/types'
+import { supabase, fmtPhone, loadTargets } from '../lib/supabase'
+import type { FloorRow, Targets } from '../lib/types'
 
 interface NumberRow {
   number: string
@@ -18,10 +18,28 @@ interface CallbackRow {
   profiles: { name: string } | null
 }
 
+/** "4m", "1h 5m" since a timestamp. */
+function since(ts: string | null): string {
+  if (!ts) return ''
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(ts)) / 60000))
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+function statusLine(r: FloorRow): string {
+  if (r.status === 'offline') return r.last_seen ? `offline · seen ${since(r.last_seen)} ago` : 'offline'
+  return r.since ? `${r.status} · ${since(r.since)}` : r.status
+}
+
+function Count({ value, target, label }: { value: number; target: number | null; label: string }) {
+  return <span><b>{value}</b>{label}{target ? <span className="of"> / {target}</span> : null}</span>
+}
+
 export default function Floor({ isManager }: { isManager: boolean }) {
   const [rows, setRows] = useState<FloorRow[]>([])
   const [numbers, setNumbers] = useState<NumberRow[]>([])
   const [callbacks, setCallbacks] = useState<CallbackRow[]>([])
+  const [targets, setTargets] = useState<Targets>({ dials: null, connects: null, handoffs: null })
+  const [dropPts, setDropPts] = useState(10)
   const [toast, setToast] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
@@ -38,6 +56,16 @@ export default function Floor({ isManager }: { isManager: boolean }) {
   }, [isManager])
 
   useEffect(() => {
+    loadTargets().then(setTargets)
+    // the drop (in points, week over week) that flags a number: app_settings.spam_alert_drop_pts
+    supabase.from('app_settings').select('value').eq('key', 'spam_alert_drop_pts').maybeSingle()
+      .then(({ data }) => {
+        const v = Number(data?.value)
+        if (Number.isFinite(v) && v > 0) setDropPts(v)
+      })
+  }, [])
+
+  useEffect(() => {
     refresh()
     const chan = supabase
       .channel('floor')
@@ -47,47 +75,69 @@ export default function Floor({ isManager }: { isManager: boolean }) {
     return () => { supabase.removeChannel(chan); window.clearInterval(iv) }
   }, [refresh])
 
+  function flash(m: string) {
+    setToast(m); window.setTimeout(() => setToast(null), 2500)
+  }
+
   function copy(text: string) {
-    navigator.clipboard?.writeText(text).then(() => {
-      setToast('Copied'); window.setTimeout(() => setToast(null), 1500)
-    })
+    navigator.clipboard?.writeText(text).then(() => flash('Copied'))
   }
 
   async function requeue(cb: CallbackRow) {
-    await supabase.rpc('release_lead', { p_lead_id: cb.lead_id })
+    const { error } = await supabase.rpc('release_lead', { p_lead_id: cb.lead_id })
+    if (error) flash(error.message)
     refresh()
   }
 
   function spamFlag(n: NumberRow): boolean {
     if (n.rate_7d == null) return false
-    if (n.rate_prev_7d != null && n.rate_prev_7d - n.rate_7d >= 10) return true
+    if (n.rate_prev_7d != null && n.rate_prev_7d - n.rate_7d >= dropPts) return true
     return (n.dials_7d ?? 0) >= 60 && n.rate_7d < 8
   }
+  const flagged = numbers.filter(spamFlag)
 
   return (
     <div className="page">
+      {flagged.length > 0 && (
+        <div className="card alertcard">
+          <b>Possible spam label</b>
+          {flagged.map((n) => (
+            <div key={n.number} className="small">
+              {fmtPhone(n.number)}: connect rate {n.rate_prev_7d != null ? `${n.rate_prev_7d}% → ` : ''}{n.rate_7d}% over the last 7 days
+            </div>
+          ))}
+          <div className="small">Swap it for a fresh number in Zoom, then watch the new one here.</div>
+        </div>
+      )}
+
       <div className="floorgrid">
-        {rows.map((r) => (
-          <div className="card agenttile" key={r.agent_id}>
-            <div className="aname"><span className={`statusdot ${r.status}`} />{r.name}</div>
-            <div className="small muted" style={{ minHeight: 20 }}>
-              {r.status === 'offline' ? 'offline' : r.status}
-              {r.lead_name && <> · {r.lead_name}</>}
-            </div>
-            {r.phone_display && (
-              <div className="small">
-                {fmtPhone(r.phone_display)}
-                <button className="copybtn" onClick={() => copy(r.phone_display!)}>copy</button>
+        {rows.map((r) => {
+          const pct = targets.dials ? Math.min(100, Math.round((100 * r.dials_today) / targets.dials)) : null
+          return (
+            <div className="card agenttile" key={r.agent_id}>
+              <div className="aname"><span className={`statusdot ${r.status}`} />{r.name}</div>
+              <div className="small muted" style={{ minHeight: 20 }}>
+                {statusLine(r)}
+                {r.lead_name && <> · {r.lead_name}</>}
               </div>
-            )}
-            <div className="tilecounts">
-              <span><b>{r.dials_today}</b>dials</span>
-              <span><b>{r.connects_today}</b>connects</span>
-              <span><b>{r.handoffs_today}</b>handoffs</span>
-              <span><b>{r.emails_today}</b>emails</span>
+              {r.phone_display && (
+                <div className="small">
+                  {fmtPhone(r.phone_display)}
+                  <button className="copybtn" onClick={() => copy(r.phone_display!)}>copy</button>
+                </div>
+              )}
+              <div className="tilecounts">
+                <Count value={r.dials_today} target={targets.dials} label="dials" />
+                <Count value={r.connects_today} target={targets.connects} label="connects" />
+                <Count value={r.handoffs_today} target={targets.handoffs} label="handoffs" />
+                <span><b>{r.emails_today}</b>emails</span>
+              </div>
+              {pct != null && (
+                <div className="targetbar" title={`${pct}% of today's dial target`}><i style={{ width: `${pct}%` }} /></div>
+              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
         {!rows.length && <div className="muted">No active agents yet — create logins in Supabase Auth.</div>}
       </div>
 
@@ -114,7 +164,7 @@ export default function Floor({ isManager }: { isManager: boolean }) {
         </>
       )}
 
-      <div className="sectionhead"><h3>Number health</h3><span className="muted small">connect-rate collapse = probable spam label — swap that number in Zoom</span></div>
+      <div className="sectionhead"><h3>Number health</h3><span className="muted small">a connect rate down {dropPts}+ points on the week = probable spam label — swap that number in Zoom</span></div>
       <div className="card">
         {numbers.length ? (
           <table className="data">

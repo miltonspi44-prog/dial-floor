@@ -32,6 +32,7 @@ export interface LeadRow {
   platform: string | null
   platform_detail: string | null
   email: string | null
+  address: string | null
   addr_city: string | null
   addr_state: string | null
   zip: string | null
@@ -66,6 +67,15 @@ export interface FloorRow {
   connects_today: number
   handoffs_today: number
   emails_today: number
+  /** Last heartbeat/ping; after 5 quiet minutes the view reports the agent offline. */
+  last_seen: string | null
+}
+
+/** Daily per-agent targets from kpi_targets (F4). */
+export interface Targets {
+  dials: number | null
+  connects: number | null
+  handoffs: number | null
 }
 
 export interface Battlecard {

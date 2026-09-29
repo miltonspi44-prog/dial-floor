@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import type { Targets } from './types'
 
 export const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL as string,
@@ -29,6 +30,17 @@ export function heartbeatOffline(accessToken: string) {
     },
     body: JSON.stringify({ p_status: 'offline' }),
   }).catch(() => {})
+}
+
+/** Each agent's daily targets (kpi_targets, F4); a metric that isn't set comes back null. */
+export async function loadTargets(): Promise<Targets> {
+  const { data } = await supabase.from('kpi_targets').select('metric, target').eq('scope', 'agent_day')
+  const t = new Map((data ?? []).map((r) => [r.metric as string, Number(r.target)]))
+  return {
+    dials: t.get('dials_per_day') ?? null,
+    connects: t.get('connects_per_day') ?? null,
+    handoffs: t.get('handoffs_per_day') ?? null,
+  }
 }
 
 /** Launch the Zoom desktop client dialing this number (Fork 2-A). */

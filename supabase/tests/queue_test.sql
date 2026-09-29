@@ -251,6 +251,7 @@ begin
   perform t.fails('select public.skip_lead(1)', 'not signed in');
   perform t.fails('select public.release_lead(1)', 'not signed in');
   perform t.fails('select public.heartbeat(''idle'')', 'not signed in');
+  perform t.fails('select public.heartbeat(''ping'')', 'not signed in');
   assert public.next_lead()->>'error' = 'not signed in';
 end $$;
 
@@ -274,6 +275,7 @@ begin
   perform public.heartbeat('idle');
   assert (select dials_today from public.v_floor_today where agent_id = t.uid('A')) = 0, 'the floor board is readable';
   perform t.fails('select public.build_workspace(1, ''peek'')', 'permission denied');
+  perform t.fails('select public.wake_rested()', 'permission denied');
   perform t.fails('select public.refresh_lead(1)', 'permission denied');
   perform t.fails('select public.bump_number_stats(''5555550000'', true)', 'permission denied');
 end $$;
@@ -288,6 +290,89 @@ insert into auth.users (id, email) values ('dddddddd-0000-0000-0000-00000000000d
 reset role;
 do $$ begin
   assert exists (select 1 from profiles where id = 'dddddddd-0000-0000-0000-00000000000d');
+end $$;
+
+\echo '14 · A rest ends: resting leads rejoin the queue (they were dropped for good)'
+select t.reset() \g /dev/null
+do $$
+declare att bigint; n jsonb;
+begin
+  att := t.dial('A', 'X');
+  n := t.log('A', att, 'not_interested_soft');
+  assert (select state = 'resting' and rest_until > now() + interval '9 days' from lead_state where lead_id = t.lead('X')),
+    'not interested (soft) rests 10 days';
+  assert t.name(n->'next') <> 'X', 'not served while resting';
+  -- ten days later
+  update lead_state set rest_until = now() - interval '1 minute', last_attempt_at = now() - interval '10 days'
+    where lead_id = t.lead('X');
+  n := t.next('B');
+  assert t.name(n) = 'X', format('served again once the rest is over, got %s', t.name(n));
+  assert (select state from lead_state where lead_id = t.lead('X')) = 'queued', 'and back to queued';
+end $$;
+select t.reset() \g /dev/null
+do $$
+declare att bigint; r jsonb;
+begin
+  att := t.dial('A', 'X');
+  perform t.log('A', att, 'language_barrier');
+  update lead_state set rest_until = now() - interval '1 minute' where lead_id = t.lead('X');
+  perform t.as_user('M');
+  r := build_list('after the rest', null, '{}', 10);
+  assert exists (select 1 from list_items where list_id = (r->>'list_id')::bigint and lead_id = t.lead('X')),
+    'list building picks it up too';
+end $$;
+
+\echo '15 · Agents can''t make themselves managers; a deactivated agent is served nothing and can''t dial'
+select t.reset() \g /dev/null
+select t.as_user('A') \g /dev/null
+set role authenticated;
+do $$
+begin
+  perform t.fails(format('update public.profiles set role = %L where id = %L', 'manager', t.uid('A')), 'permission denied');
+  perform t.fails(format('update public.profiles set active = true where id = %L', t.uid('A')), 'permission denied');
+  update public.profiles set name = 'Agent A' where id = t.uid('A');   -- renaming yourself is fine
+end $$;
+reset role;
+do $$
+declare att bigint; n jsonb;
+begin
+  assert (select role = 'agent' and name = 'Agent A' from profiles where id = t.uid('A'));
+  update profiles set name = 'agent.a' where id = t.uid('A');
+  att := t.dial('A', 'X');
+  update profiles set active = false where id = t.uid('A');
+  n := t.next('A');
+  assert n->>'reason' = 'resume', 'a call open when deactivated still comes back to be logged';
+  n := t.log('A', att, 'no_answer');
+  assert n->'next'->>'error' like '%deactivated%', 'then no more leads';
+  perform t.fails(format('select public.start_attempt(%s)', t.lead('Y')), 'deactivated');
+  update profiles set active = true where id = t.uid('A');
+  assert t.name(t.next('A')) is not null, 'reactivated: served again';
+end $$;
+
+\echo '16 · The calling window is checked when dialing, not only when the lead was served'
+select t.reset() \g /dev/null
+do $$
+declare w jsonb := (select value from app_settings where key = 'call_window');
+        shut text := left(((now() at time zone 'America/New_York') + interval '2 hours')::time::text, 5);
+begin
+  assert t.name(t.next('A')) = 'X', 'served while the window is open';
+  update app_settings set value = jsonb_build_object('start', shut, 'end', shut) where key = 'call_window';
+  perform t.fails(format('select public.start_attempt(%s)', t.lead('X')), 'calling window');
+  update app_settings set value = w where key = 'call_window';
+  perform t.dial('A', 'X');
+end $$;
+
+\echo '17 · The floor board shows a browser that went quiet as offline; a ping keeps it live'
+select t.reset() \g /dev/null
+do $$
+begin
+  perform t.as_user('A');
+  perform public.heartbeat('idle');
+  assert (select status from v_floor_today where agent_id = t.uid('A')) = 'idle';
+  update agent_status set updated_at = now() - interval '10 minutes' where agent_id = t.uid('A');
+  assert (select status from v_floor_today where agent_id = t.uid('A')) = 'offline', 'quiet for 10 minutes: offline';
+  perform public.heartbeat('ping');
+  assert (select status from v_floor_today where agent_id = t.uid('A')) = 'idle', 'a ping brings it back, status unchanged';
 end $$;
 
 \echo 'all queue tests passed'
