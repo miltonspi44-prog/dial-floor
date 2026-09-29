@@ -1,0 +1,19 @@
+# Hostinger (LiteSpeed/Apache). Vite copies this into dist/ on every build.
+RewriteEngine On
+
+# HTTPS only
+RewriteCond %{HTTPS} off
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# client-side routes (/dial, /floor, ...) all serve the app
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [L]
+
+# always revalidate the page itself, so a redeploy reaches agents on their next
+# load; the hashed files under assets/ can be cached freely
+<IfModule mod_headers.c>
+  <FilesMatch "index\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>

@@ -5,6 +5,8 @@
 //
 // Required function secrets:
 //   ZOOM_WEBHOOK_SECRET_TOKEN  (from the Zoom app's Features > Event Subscriptions)
+//   ZOOM_ACCOUNT_ID / ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET  (the S2S OAuth app; only
+//     needed for AI call summaries, whose text is fetched from the Phone API)
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are injected automatically.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -14,6 +16,33 @@ const supa = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 const SECRET = Deno.env.get("ZOOM_WEBHOOK_SECRET_TOKEN") ?? "";
+const ZOOM_ACCOUNT_ID = Deno.env.get("ZOOM_ACCOUNT_ID") ?? "";
+const ZOOM_CLIENT_ID = Deno.env.get("ZOOM_CLIENT_ID") ?? "";
+const ZOOM_CLIENT_SECRET = Deno.env.get("ZOOM_CLIENT_SECRET") ?? "";
+// overridable only so tests can point them at a stand-in
+const ZOOM_OAUTH_URL = Deno.env.get("ZOOM_OAUTH_URL") ?? "https://zoom.us/oauth/token";
+const ZOOM_API = Deno.env.get("ZOOM_API_BASE") ?? "https://api.zoom.us/v2";
+
+// Server-to-server OAuth: one account-level token, reused until it nears expiry.
+let zoomToken: { value: string; until: number } | null = null;
+async function zoomApi(path: string): Promise<any> {
+  if (!ZOOM_ACCOUNT_ID || !ZOOM_CLIENT_ID || !ZOOM_CLIENT_SECRET) {
+    throw new Error("ZOOM_ACCOUNT_ID / ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET are not set, so the summary text can't be fetched");
+  }
+  if (!zoomToken || zoomToken.until < Date.now() + 60_000) {
+    const res = await fetch(`${ZOOM_OAUTH_URL}?grant_type=account_credentials&account_id=${encodeURIComponent(ZOOM_ACCOUNT_ID)}`, {
+      method: "POST",
+      headers: { Authorization: "Basic " + btoa(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`) },
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.access_token) throw new Error(`Zoom token: HTTP ${res.status} ${j.reason ?? j.error ?? ""}`.trim());
+    zoomToken = { value: j.access_token, until: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
+  }
+  const res = await fetch(`${ZOOM_API}${path}`, { headers: { Authorization: `Bearer ${zoomToken.value}` } });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Zoom API ${path}: HTTP ${res.status} ${j.message ?? ""}`.trim());
+  return j;
+}
 
 async function hmacHex(key: string, msg: string): Promise<string> {
   const k = await crypto.subtle.importKey(
@@ -30,6 +59,10 @@ function norm(p?: string | null): string {
 }
 
 Deno.serve(async (req) => {
+  // Nothing can be validated or verified until the secret is set (an empty
+  // HMAC key throws, which used to surface as a 500 on every request)
+  if (!SECRET) return new Response("ZOOM_WEBHOOK_SECRET_TOKEN is not set", { status: 503 });
+
   const body = await req.text();
   let evt: any;
   try { evt = JSON.parse(body); } catch { return new Response("bad json", { status: 400 }); }
@@ -44,7 +77,7 @@ Deno.serve(async (req) => {
   const ts = req.headers.get("x-zm-request-timestamp") ?? "";
   const sig = req.headers.get("x-zm-signature") ?? "";
   const expect = "v0=" + await hmacHex(SECRET, `v0:${ts}:${body}`);
-  if (!SECRET || sig !== expect) return new Response("bad signature", { status: 401 });
+  if (sig !== expect) return new Response("bad signature", { status: 401 });
 
   // Dedupe on Zoom's tracking id (fallback: event + ts + call id)
   const eventId = req.headers.get("x-zm-trackingid") ??
@@ -57,7 +90,9 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (insErr) {
     // duplicate delivery — ack so Zoom stops retrying
-    return new Response("dup", { status: 200 });
+    if (insErr.code === "23505") return new Response("dup", { status: 200 });
+    // anything else: fail so Zoom retries, rather than dropping the event
+    return new Response("store failed", { status: 500 });
   }
 
   try {
@@ -81,25 +116,31 @@ async function process(evt: any) {
     const callerNum = norm(obj.caller?.phone_number ?? obj.caller?.did_number);
     if (!callee) return;
 
-    const answered = !!obj.answer_start_time;
+    // Zoom's caller_ended events carry connected_start_time once the far end
+    // picks up (person, voicemail or auto-attendant); answer_start_time is the
+    // older name. Neither is present when the call rang out or was cancelled.
+    const answerAt = obj.connected_start_time ?? obj.answer_start_time ?? null;
+    const answered = !!answerAt;
     const endT = obj.call_end_time ? Date.parse(obj.call_end_time) : Date.now();
-    const ansT = obj.answer_start_time ? Date.parse(obj.answer_start_time) : null;
+    const ansT = answerAt ? Date.parse(answerAt) : null;
     const duration = ansT ? Math.max(0, Math.round((endT - ansT) / 1000)) : 0;
 
-    const { data: leads } = await supa.from("leads").select("id").eq("phone_norm", callee).limit(1);
+    // Every lead record with this number: the scrape can list one business twice
+    const { data: leads, error: leadErr } = await supa.from("leads").select("id").eq("phone_norm", callee);
+    if (leadErr) throw leadErr;
     if (!leads?.length) return;
-    const leadId = leads[0].id;
 
-    // Latest unmatched attempt for this lead in the last 20 minutes
+    // Latest unmatched attempt on any of them in the last 20 minutes
     const cutoff = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-    const { data: atts } = await supa
+    const { data: atts, error: attErr } = await supa
       .from("attempts")
       .select("id, disposition")
-      .eq("lead_id", leadId)
+      .in("lead_id", leads.map((l) => l.id))
       .eq("matched", false)
       .gte("clicked_at", cutoff)
       .order("clicked_at", { ascending: false })
       .limit(1);
+    if (attErr) throw attErr;
     if (!atts?.length) return;
     const att = atts[0];
 
@@ -133,17 +174,34 @@ async function process(evt: any) {
     const enabled = s?.value === true || s?.value === "true";
     if (!enabled) return;
 
-    const callId = obj.call_id ?? obj.call_log_id ?? null;
-    if (!callId) return;
+    // A call dialed straight from Zoom has no attempt to attach to: skip it
+    // before spending a Phone API request on it.
+    const eventCallId = obj.call_id ?? obj.call_log_id ?? null;
+    if (eventCallId) {
+      const { data: att, error } = await supa.from("attempts").select("id").eq("zoom_call_id", eventCallId).limit(1);
+      if (error) throw error;
+      if (!att?.length) return;
+    }
+
+    // The event ("Call Summary Changed" in the Marketplace) names the summary; its
+    // text comes from the Phone API (scope phone:read:ai_call_summary:admin).
+    const summaryId = obj.ai_call_summary_id ?? obj.call_summary_id ?? null;
+    let detail = obj;
+    if (!obj.call_summary && !obj.summary && summaryId) {
+      const zoomUser = obj.user_id ?? obj.owner?.id ?? "me";
+      detail = await zoomApi(`/phone/user/${encodeURIComponent(zoomUser)}/ai_call_summary/${encodeURIComponent(summaryId)}`);
+    }
+    const callId = detail.call_id ?? eventCallId;
+    if (!callId) throw new Error("summary event without a call id");
     const summary = {
-      summary: obj.call_summary ?? obj.summary ?? null,
-      next_steps: obj.next_steps ?? null,
-      detail: obj.detailed_summary ?? null,
+      summary: detail.call_summary ?? detail.summary ?? null,
+      next_steps: detail.next_steps ?? null,
+      detail: detail.detailed_summary ?? null,
+      summary_id: summaryId,
       raw: obj,
       at: new Date().toISOString(),
     };
-    await supa.from("attempts")
-      .update({ ai_summary: summary })
-      .eq("zoom_call_id", callId);
+    const { error } = await supa.from("attempts").update({ ai_summary: summary }).eq("zoom_call_id", callId);
+    if (error) throw error;
   }
 }

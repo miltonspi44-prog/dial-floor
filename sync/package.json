@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Pulls dialable leads from the hosted console into the dialing DB and writes statuses back. Never touches leads.db directly (single-writer rule).",
   "scripts": {
+    "preview": "node --env-file=.env preview.mjs",
     "pull": "node --env-file=.env pull-leads.mjs",
     "push": "node --env-file=.env push-status.mjs",
     "loop": "node --env-file=.env run.mjs",

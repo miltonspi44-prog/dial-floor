@@ -3,25 +3,40 @@ import { CONNECTED_DISPOSITIONS } from '../lib/types'
 
 interface Props {
   leadName: string
+  /** The lead's IANA timezone: callback times are entered on the lead's clock. */
+  tz: string | null
   onPick: (code: string, args: Record<string, unknown>) => void
   onClose: () => void
 }
 
+// the database falls back to the same zone when a lead has none
+const FALLBACK_TZ = 'America/New_York'
+
+/** The lead's zone if the browser knows it (a bad value would crash Intl). */
+function validTz(tz: string | null): string {
+  try {
+    if (tz) { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz }
+  } catch { /* unknown zone: fall back */ }
+  return FALLBACK_TZ
+}
+
+/** Tomorrow 10:00 on the lead's clock, as a datetime-local value. */
+function defaultCallback(tz: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date(Date.now() + 24 * 3600 * 1000))
+  const get = (type: string) => parts.find((p) => p.type === type)?.value
+  return `${get('year')}-${get('month')}-${get('day')}T10:00`
+}
+
 /** Shown only when a human answered. One keystroke — or one big click. */
-export default function DispositionPopup({ leadName, onPick, onClose }: Props) {
+export default function DispositionPopup({ leadName, tz, onPick, onClose }: Props) {
+  const leadTz = validTz(tz)
   const [pending, setPending] = useState<(typeof CONNECTED_DISPOSITIONS)[number] | null>(null)
   const [note, setNote] = useState('')
-  const [dueAt, setDueAt] = useState(defaultCallback())
+  const [dueAt, setDueAt] = useState(() => defaultCallback(leadTz))
   const [email, setEmail] = useState('')
   const [summary, setSummary] = useState('')
   const [rating, setRating] = useState(0)
-
-  function defaultCallback() {
-    const d = new Date(Date.now() + 24 * 3600 * 1000)
-    d.setMinutes(0, 0, 0); d.setHours(10)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-  }
 
   function choose(opt: (typeof CONNECTED_DISPOSITIONS)[number]) {
     if (opt.needs) { setPending(opt); return }
@@ -31,7 +46,11 @@ export default function DispositionPopup({ leadName, onPick, onClose }: Props) {
   function saveFollowup() {
     if (!pending) return
     const args: Record<string, unknown> = note ? { note } : {}
-    if (pending.needs === 'callback') args.due_at = new Date(dueAt).toISOString()
+    if (pending.needs === 'callback') {
+      // wall-clock time on the lead's side; the database reads it in the lead's timezone
+      if (!dueAt) return
+      args.due_local = dueAt
+    }
     if (pending.needs === 'email') {
       if (!email.includes('@')) return
       args.email = email.trim()
@@ -45,7 +64,7 @@ export default function DispositionPopup({ leadName, onPick, onClose }: Props) {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') { pending ? setPending(null) : onClose(); return }
+      if (e.key === 'Escape') { if (pending) setPending(null); else onClose(); return }
       const target = e.target as HTMLElement
       if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
         if (e.key === 'Enter' && pending && target.tagName !== 'TEXTAREA') { e.preventDefault(); saveFollowup() }
@@ -95,6 +114,9 @@ export default function DispositionPopup({ leadName, onPick, onClose }: Props) {
             <div className="followup">
               <label htmlFor="cb-when">Their local date &amp; time</label>
               <input id="cb-when" type="datetime-local" value={dueAt} onChange={(e) => setDueAt(e.target.value)} autoFocus />
+              <span className="muted small">
+                For them it's {new Intl.DateTimeFormat('en-US', { timeZone: leadTz, weekday: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date())} now ({leadTz.replace(/_/g, ' ')})
+              </span>
               <label htmlFor="cb-note">Note</label>
               <input id="cb-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="who to ask for, context…" />
               <div className="actionrow">

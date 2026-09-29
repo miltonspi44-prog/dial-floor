@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { supabase, fmtPhone, zoomDial } from '../lib/supabase'
-import type { NextLeadResult, Profile } from '../lib/types'
+import { supabase, fmtPhone, zoomDial, loadTargets } from '../lib/supabase'
+import type { LeadRow, NextLeadResult, Profile, Targets } from '../lib/types'
 import DispositionPopup from '../components/DispositionPopup'
 import Battlecards from '../components/Battlecards'
 
@@ -10,6 +10,16 @@ const REASON_LABEL: Record<string, string> = {
   callback_due: 'CALLBACK DUE — they asked for this call',
   list: 'From your list',
   pool: 'From the pool',
+  resume: 'CALL STILL OPEN — log how it went',
+}
+
+function addressLine(l: LeadRow): string {
+  if (l.address) return l.address
+  return [l.addr_city, [l.addr_state, l.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ')
+}
+
+function Stat({ label, value, target }: { label: string; value: number; target: number | null | undefined }) {
+  return <span className="statchip">{label} <b>{value}</b>{target ? <span className="of"> / {target}</span> : null}</span>
 }
 
 export default function Dial({ profile }: { profile: Profile | null }) {
@@ -20,6 +30,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   const [vmAsk, setVmAsk] = useState(false)
   const [callSec, setCallSec] = useState(0)
   const [today, setToday] = useState<{ dials: number; connects: number; handoffs: number } | null>(null)
+  const [targets, setTargets] = useState<Targets | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const timerRef = useRef<number | null>(null)
@@ -36,11 +47,16 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   }, [profile])
 
   const applyResult = useCallback((res: NextLeadResult | null) => {
-    setAttemptId(null); setPopup(false); setVmAsk(false); stopTimer()
+    setPopup(false); setVmAsk(false); stopTimer()
+    setWs(res)
     if (!res || res.empty || res.error || !res.lead) {
-      setWs(res); setPhase('empty')
+      setAttemptId(null); setPhase('empty')
+    } else if (res.attempt_id) {
+      // reloaded mid-call: pick the open call back up so its outcome gets logged
+      setAttemptId(res.attempt_id); setPhase('dialing')
+      startTimer(res.clicked_at ? Date.parse(res.clicked_at) : Date.now())
     } else {
-      setWs(res); setPhase('ready')
+      setAttemptId(null); setPhase('ready')
     }
   }, [])
 
@@ -53,8 +69,11 @@ export default function Dial({ profile }: { profile: Profile | null }) {
 
   useEffect(() => {
     loadNext()
+    refreshToday()
     supabase.rpc('heartbeat', { p_status: 'idle' }).then(() => {})
-  }, [loadNext])
+  }, [loadNext, refreshToday])
+
+  useEffect(() => { loadTargets().then(setTargets) }, [])
 
   function setToastMsg(m: string) {
     setToast(m)
@@ -63,6 +82,12 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   function stopTimer() {
     if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null }
     setCallSec(0)
+  }
+  function startTimer(t0: number) {
+    stopTimer()
+    const tick = () => setCallSec(Math.max(0, Math.round((Date.now() - t0) / 1000)))
+    tick()
+    timerRef.current = window.setInterval(tick, 1000)
   }
 
   async function dial() {
@@ -73,9 +98,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     if (error) { setToastMsg(error.message); loadNext(); return }
     setAttemptId((data as { attempt_id: number }).attempt_id)
     setPhase('dialing')
-    stopTimer()
-    const t0 = Date.now()
-    timerRef.current = window.setInterval(() => setCallSec(Math.round((Date.now() - t0) / 1000)), 1000)
+    startTimer(Date.now())
     zoomDial(lead.phone_norm)
   }
 
@@ -94,9 +117,11 @@ export default function Dial({ profile }: { profile: Profile | null }) {
 
   async function skip() {
     if (!lead || busy) return
-    if (attemptId) { await log('skipped'); return }
-    await supabase.rpc('release_lead', { p_lead_id: lead.id })
-    loadNext()
+    setBusy(true)
+    const { data, error } = await supabase.rpc('skip_lead', { p_lead_id: lead.id })
+    setBusy(false)
+    if (error) { setToastMsg(error.message); return }
+    applyResult((data as { next: NextLeadResult }).next)
   }
 
   // global keys (popup handles its own while open)
@@ -145,9 +170,9 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     <div className="page">
       <div className="actionrow" style={{ marginBottom: 12 }}>
         <div className="statchips">
-          <span className="statchip">Dials <b>{today?.dials ?? 0}</b></span>
-          <span className="statchip">Connects <b>{today?.connects ?? 0}</b></span>
-          <span className="statchip">Handoffs <b>{today?.handoffs ?? 0}</b></span>
+          <Stat label="Dials" value={today?.dials ?? 0} target={targets?.dials} />
+          <Stat label="Connects" value={today?.connects ?? 0} target={targets?.connects} />
+          <Stat label="Handoffs" value={today?.handoffs ?? 0} target={targets?.handoffs} />
         </div>
       </div>
 
@@ -234,9 +259,10 @@ export default function Dial({ profile }: { profile: Profile | null }) {
             </div>
             <div className="card">
               <h4>Business facts</h4>
+              <div className="factrow"><span>Address</span><span className="v">{addressLine(lead) || '—'}</span></div>
               <div className="factrow"><span>Rating</span><span className="v">{lead.rating ?? '—'} ({lead.review_count ?? 0} reviews)</span></div>
               <div className="factrow"><span>Website</span><span className="v">{lead.website_type === 'none' ? 'NONE' : (lead.platform_detail ?? lead.platform ?? lead.website_type ?? '—')}</span></div>
-              <div className="factrow"><span>Line type</span><span className="v">{(lead as { phone_type?: string }).phone_type ?? '—'}</span></div>
+              <div className="factrow"><span>Line type</span><span className="v">{lead.phone_type ?? '—'}</span></div>
               <div className="factrow"><span>Tier / score</span><span className="v">{lead.tier ?? '—'} / {lead.score ?? '—'}</span></div>
               <div className="factrow"><span>Trades</span><span className="v">{(lead.categories ?? [lead.category]).filter(Boolean).join(', ') || '—'}</span></div>
               <div className="actionrow" style={{ marginTop: 6 }}>
@@ -252,6 +278,12 @@ export default function Dial({ profile }: { profile: Profile | null }) {
                     <li key={i}>
                       {new Date(h.at).toLocaleDateString()} — {h.agent}: <b>{h.disposition ?? 'no outcome'}</b>
                       {h.note && <span className="muted"> · {h.note}</span>}
+                      {h.ai_summary && (
+                        <div className="aisum">
+                          {h.ai_summary}
+                          {h.next_steps && <div className="muted">Next: {h.next_steps}</div>}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -265,6 +297,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       {popup && lead && (
         <DispositionPopup
           leadName={lead.name}
+          tz={lead.tz}
           onPick={(code, args) => log(code, args)}
           onClose={() => setPopup(false)}
         />

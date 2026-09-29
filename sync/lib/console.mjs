@@ -2,7 +2,7 @@
 // Session auth with the console password; keeps the PHP session cookie.
 // Respects the console's login lockout (10 fails / 15 min) — one attempt, no retry loops.
 
-const BASE = (process.env.CONSOLE_URL ?? '').replace(/\/$/, '')
+const BASE = (process.env.CONSOLE_URL ?? 'https://leads.sedsolutions.online').replace(/\/$/, '')
 const PASSWORD = process.env.CONSOLE_PASSWORD ?? ''
 
 let cookie = null
@@ -21,7 +21,11 @@ async function api(action, { method = 'GET', params = {}, body } = {}) {
   if (setCookie) cookie = setCookie.split(';')[0]
   const text = await res.text()
   let json
-  try { json = JSON.parse(text) } catch { throw new Error(`console ${action}: non-JSON response (${res.status})`) }
+  try { json = JSON.parse(text) } catch {
+    // a PHP fatal comes back as an HTML page: keep its gist so the failure is diagnosable
+    const gist = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+    throw new Error(`console ${action}: non-JSON response (${res.status})${gist ? `: ${gist}` : ', empty body'}`)
+  }
   if (!res.ok) throw new Error(`console ${action}: ${json.error ?? res.status}`)
   return json
 }
@@ -36,11 +40,16 @@ export async function ensureAuth() {
   if (!me.authed) await login()
 }
 
+/** One page of dialable leads: { total, leads }. */
+export async function leadsPage(limit, offset) {
+  return api('leads', { params: { dialable: 1, limit, offset } })
+}
+
 /** Page through dialable leads. Yields arrays of rows. */
 export async function* dialableLeads(pageSize = 500) {
   let offset = 0
   for (;;) {
-    const { total, leads } = await api('leads', { params: { dialable: 1, limit: pageSize, offset } })
+    const { total, leads } = await leadsPage(pageSize, offset)
     if (!leads?.length) return
     yield leads
     offset += leads.length
@@ -54,7 +63,8 @@ export async function setStatus(id, status, note) {
 
 export async function markContacted(ids) {
   if (!ids.length) return
-  for (let i = 0; i < ids.length; i += 200) {
-    await api('contacted', { method: 'POST', body: { ids: ids.slice(i, i + 200) } })
+  // the console writes a status + log row per id; keep each request small
+  for (let i = 0; i < ids.length; i += 50) {
+    await api('contacted', { method: 'POST', body: { ids: ids.slice(i, i + 50) } })
   }
 }

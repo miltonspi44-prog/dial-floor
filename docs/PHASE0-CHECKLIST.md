@@ -16,8 +16,20 @@ one row with your own cell number), press **D**.
 second PC on the same Zoom login at the same time — both attempts must match to
 the right agent. (You already know simultaneous calls work — this proves the
 data side agrees.)
+While a call is up, the Floor tab on the other PC must show that agent as
+**dialing** (not offline). Back on the Dial screen, press **S** on a lead
+before dialing: a different lead must load. Log a test callback for tomorrow
+10:00 — the form shows the lead's own local time, and the manager's Floor tab
+lists it at the same moment in the viewer's timezone (a 10:00 New York callback
+shows as 7:00 AM on a Pacific PC).
 
 ## 3 · The AI-summary silence test (5 min) — decides Fork 1-B
+**Status (2026-09-29): not applicable.** AI Companion call summaries aren't
+available on this Zoom plan, so the system stays metadata-only (Fork 1-A):
+each call is logged with its outcome, Zoom's talk time and the agent's note,
+all visible in the Floor page's Recent calls. If summaries are ever added to
+the plan, run this test first, then see ZOOM-SETUP.md §4.
+
 Recording policies OFF account-wide (they already are). Admin → Zoom Phone →
 Call summary with AI → find **"Play a prompt to call participant when call
 summary has started"** and turn it **off** if present.
@@ -31,12 +43,18 @@ Note: with the prompt off, any disclosure duty for AI transcription shifts to
 you — the one question worth an hour of counsel if you enable this.
 
 ## 4 · Phone API sanity (1 min)
+**Status: not needed while the system is metadata-only**: nothing calls the
+Zoom API yet (the webhook needs only its secret token). Run it if AI summaries
+or call-history backfill are ever turned on.
 From the Zoom app's credentials, any REST client:
 `GET https://api.zoom.us/v2/phone/users` with an S2S token.
 **Pass:** 200 with your users. (401/account-type error → the one known
 contingency: one paid Workplace seat on the admin account.)
 
 ## 5 · Calling-window guard (1 min)
+**Status: covered by the queue tests** (supabase/tests/run.sh: a lead outside
+its window is never served, and can't be dialed if its window closes after it
+loaded). The manual check below is optional.
 In the portal before 8am / after 8:30pm lead-local time, **Load next** should
 skip leads whose local window is closed (the empty-state hint says so).
 Quick check: set `call_window` in `app_settings` to a narrow range, confirm the
