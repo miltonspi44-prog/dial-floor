@@ -81,7 +81,7 @@ export default function App() {
         {isManager && <Route path="/funnel" element={<Funnel />} />}
         {isManager && <Route path="/lists" element={<Lists />} />}
         {isManager && <Route path="/ledger" element={<Ledger />} />}
-        {isManager && <Route path="/emails" element={<Emails />} />}
+        {isManager && <Route path="/emails" element={<Emails myName={profile?.name ?? ''} />} />}
         <Route path="*" element={<Navigate to="/dial" replace />} />
       </Routes>
     </>

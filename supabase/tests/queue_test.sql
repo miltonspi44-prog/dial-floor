@@ -437,4 +437,43 @@ begin
   perform t.fails('select public.funnel(7)', 'manager only');
 end $$;
 
+\echo '20 · Email templates: managers write them, the queue records which one went out'
+select t.reset() \g /dev/null
+set role anon;
+do $$ begin
+  assert (select count(*) from public.email_templates) = 0, 'anon sees no templates';
+end $$;
+reset role;
+set role authenticated;
+do $$
+declare att bigint; q bigint; tpl bigint; n int;
+begin
+  perform t.as_user('A');
+  assert (select count(*) from email_templates where active) >= 3, 'the starter drafts are there, and agents can read them';
+  perform t.fails('insert into email_templates (name, subject, body) values (''mine'', ''s'', ''b'')', 'row-level security');
+  update email_templates set body = 'hijacked' where name = 'AI receptionist';
+  get diagnostics n = row_count;
+  assert n = 0, 'an agent can''t edit a template';
+
+  -- an agent queues an email the usual way
+  att := t.dial('A', 'X');
+  perform t.log('A', att, 'email_requested', '{"email":"owner@x.test","note":"wants prices"}');
+  q := (select id from email_queue where lead_id = t.lead('X'));
+  assert q is not null, 'the email is queued';
+  update email_queue set status = 'sent' where id = q;
+  get diagnostics n = row_count;
+  assert n = 0, 'an agent can''t mark it sent';
+
+  perform t.as_user('M');
+  insert into email_templates (name, subject, body) values ('Follow-up', 'Hi {business}', 'From {my_name}') returning id into tpl;
+  update email_templates set subject = 'Hello {business}' where id = tpl;
+  assert (select subject from email_templates where id = tpl) = 'Hello {business}', 'a manager edits templates';
+  perform t.fails('insert into email_templates (name) values (''  '')', 'check constraint');
+  update email_queue set status = 'sent', template = 'Follow-up', sent_by = t.uid('M'), sent_at = now() where id = q;
+  assert (select status = 'sent' and template = 'Follow-up' from email_queue where id = q), 'the queue records the template that went out';
+  delete from email_templates where id = tpl;
+  assert (select template from email_queue where id = q) = 'Follow-up', 'deleting a template keeps the history';
+end $$;
+reset role;
+
 \echo 'all queue tests passed'

@@ -15,7 +15,7 @@ them) · the scraper project is never modified.
 
 | Folder | What it is |
 |---|---|
-| `app/` | The web portal (Vite + React + Supabase). Agents: Dial + Floor. Manager: + Lists, Handoffs, Emails. |
+| `app/` | The web portal (Vite + React + Supabase). Agents: Dial + Floor. Manager: + Funnel, Lists, Handoffs, Emails. |
 | `supabase/migrations/` | The database schema, queue engine and seeds (already applied to project `dial-floor`, id `fevjrcxmktjwbaozbngo`). |
 | `supabase/functions/zoom-webhook/` | Edge function receiving Zoom `phone.*` webhooks (already deployed). |
 | `supabase/tests/` | Queue-engine tests: `supabase/tests/run.sh` applies every migration to a throwaway local Postgres and checks the dialing rules. |
@@ -79,6 +79,14 @@ project's public URL and publishable key.
   (per day, against the targets), by where the dial came from (callback, which
   list, general pool), by intent, and by the lead's local hour. Dials made
   before the funnel shipped show as "before tracking started" in the source table.
+- **Emails** (managers): when an agent logs "Email requested", the address and
+  their note on what the lead wants land in the queue. **Write email** fills a
+  template in for that lead; **Open in mail app** hands it to your own mail
+  client (or copy the subject and body), and **Mark sent** records which
+  template went out. Nothing is sent by the system itself. Templates are edited
+  on the same tab; placeholders like `{business}`, `{city}`, `{agent}` (who took
+  the call) and `{my_name}` fill in automatically. The three starter templates
+  are drafts: read them and make them yours before sending.
 - Roles and deactivation are the manager's: agents can't change their own.
   To take someone off the floor: `update profiles set active = false where id = '<uuid>';`
   (they're served nothing and can't dial; a call already open can still be logged).
