@@ -22,8 +22,9 @@ export async function pull() {
 export async function flushContacted() {
   let n = 0
   for (;;) {
+    // one console request's worth at a time: a failure never leaves already-marked ids flagged
     const { data, error } = await supa.from('leads').select('source_id')
-      .eq('console_mark_pending', true).not('source_id', 'is', null).limit(200)
+      .eq('console_mark_pending', true).not('source_id', 'is', null).limit(50)
     if (error) throw error
     if (!data?.length) return n
     const ids = data.map((r) => r.source_id)
