@@ -44,6 +44,12 @@ function crc32(buf) {
 function zip(entries) { // [{ name, data }] — a name ending in '/' is a directory
   const parts = [], central = []
   let offset = 0
+  // Stamp the files with the build time. The web server's file cache keys on size +
+  // mtime: with a fixed 1980 stamp, a new index.html of the same size (it always is)
+  // looked unchanged and the old one kept being served.
+  const now = new Date()
+  const dosTime = (now.getUTCHours() << 11) | (now.getUTCMinutes() << 5) | (now.getUTCSeconds() >> 1)
+  const dosDate = ((now.getUTCFullYear() - 1980) << 9) | ((now.getUTCMonth() + 1) << 5) | now.getUTCDate()
   for (const { name, data } of entries) {
     const isDir = name.endsWith('/')
     const raw = isDir ? Buffer.alloc(0) : data
@@ -52,13 +58,13 @@ function zip(entries) { // [{ name, data }] — a name ending in '/' is a direct
     const crc = crc32(raw)
     const local = Buffer.alloc(30)
     local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6)
-    local.writeUInt16LE(isDir ? 0 : 8, 8); local.writeUInt16LE(0, 10); local.writeUInt16LE(0x21, 12)
+    local.writeUInt16LE(isDir ? 0 : 8, 8); local.writeUInt16LE(dosTime, 10); local.writeUInt16LE(dosDate, 12)
     local.writeUInt32LE(crc, 14); local.writeUInt32LE(body.length, 18); local.writeUInt32LE(raw.length, 22)
     local.writeUInt16LE(nameBuf.length, 26)
     const cen = Buffer.alloc(46)
     cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(0x0314, 4); cen.writeUInt16LE(20, 6)
-    cen.writeUInt16LE(0x0800, 8); cen.writeUInt16LE(isDir ? 0 : 8, 10); cen.writeUInt16LE(0, 12)
-    cen.writeUInt16LE(0x21, 14); cen.writeUInt32LE(crc, 16); cen.writeUInt32LE(body.length, 20)
+    cen.writeUInt16LE(0x0800, 8); cen.writeUInt16LE(isDir ? 0 : 8, 10); cen.writeUInt16LE(dosTime, 12)
+    cen.writeUInt16LE(dosDate, 14); cen.writeUInt32LE(crc, 16); cen.writeUInt32LE(body.length, 20)
     cen.writeUInt32LE(raw.length, 24); cen.writeUInt16LE(nameBuf.length, 28)
     cen.writeUInt32LE(((isDir ? 0o40755 : 0o100644) << 16) >>> 0, 38); cen.writeUInt32LE(offset, 42)
     parts.push(local, nameBuf, body)
@@ -124,14 +130,15 @@ await api('POST', `/api/hosting/v1/accounts/${username}/websites/${DOMAIN}/deplo
 console.log('deploy: accepted by Hostinger, waiting for the new build to be served…')
 
 // --- 5. wait until the live site serves this build's index.html -----------
-for (let i = 0; i < 40; i++) {
+// One good answer isn't enough: the site answers from several servers, and a
+// stale one can keep serving the old index.html after a fresh one serves the new.
+let streak = 0
+for (let i = 0; i < 60 && streak < 5; i++) {
   await new Promise((r) => setTimeout(r, 3000))
   const live = await fetch(`https://${DOMAIN}/?deploy=${Date.now()}`).then((r) => r.text()).catch(() => '')
-  if (live.includes(entry)) {
-    const js = await fetch(`https://${DOMAIN}/${entry}`)
-    if (!js.ok) fail(`live index.html is new but /${entry} -> ${js.status}`)
-    console.log(`deploy: live — https://${DOMAIN} serves ${entry}`)
-    process.exit(0)
-  }
+  streak = live.includes(entry) ? streak + 1 : 0
 }
-fail(`timed out: https://${DOMAIN} is not serving ${entry} yet (check hPanel)`)
+if (streak < 5) fail(`timed out: https://${DOMAIN} is not consistently serving ${entry} yet (check hPanel)`)
+const js = await fetch(`https://${DOMAIN}/${entry}`)
+if (!js.ok || !(await js.text()).includes(bundle.slice(0, 200))) fail(`live index.html is new but /${entry} isn't this build's bundle`)
+console.log(`deploy: live — https://${DOMAIN} serves ${entry} (5 checks in a row)`)
