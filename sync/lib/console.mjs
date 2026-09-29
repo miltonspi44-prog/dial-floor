@@ -21,7 +21,11 @@ async function api(action, { method = 'GET', params = {}, body } = {}) {
   if (setCookie) cookie = setCookie.split(';')[0]
   const text = await res.text()
   let json
-  try { json = JSON.parse(text) } catch { throw new Error(`console ${action}: non-JSON response (${res.status})`) }
+  try { json = JSON.parse(text) } catch {
+    // a PHP fatal comes back as an HTML page: keep its gist so the failure is diagnosable
+    const gist = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+    throw new Error(`console ${action}: non-JSON response (${res.status})${gist ? `: ${gist}` : ', empty body'}`)
+  }
   if (!res.ok) throw new Error(`console ${action}: ${json.error ?? res.status}`)
   return json
 }
@@ -59,7 +63,8 @@ export async function setStatus(id, status, note) {
 
 export async function markContacted(ids) {
   if (!ids.length) return
-  for (let i = 0; i < ids.length; i += 200) {
-    await api('contacted', { method: 'POST', body: { ids: ids.slice(i, i + 200) } })
+  // the console writes a status + log row per id; keep each request small
+  for (let i = 0; i < ids.length; i += 50) {
+    await api('contacted', { method: 'POST', body: { ids: ids.slice(i, i + 50) } })
   }
 }

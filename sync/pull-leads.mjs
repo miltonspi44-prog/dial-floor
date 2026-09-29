@@ -34,8 +34,14 @@ export async function flushContacted() {
   }
 }
 
+// --marks-only: just retry the console `contacted` marks a failed run left pending
+async function marksOnly() {
+  await ensureAuth()
+  return flushContacted()
+}
+
 if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}`) {
-  logRun('pull_leads', pull)
+  logRun('pull_leads', process.argv[2] === '--marks-only' ? marksOnly : pull)
     .then((n) => { console.log(`pull done: ${n} leads`); process.exit(0) })
     .catch((e) => { console.error(e); process.exit(1) })
 }
