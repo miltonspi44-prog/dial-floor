@@ -15,7 +15,7 @@ them) · the scraper project is never modified.
 
 | Folder | What it is |
 |---|---|
-| `app/` | The web portal (Vite + React + Supabase). Agents: Dial + Floor. Manager: + Funnel, Lists, Handoffs, Emails. |
+| `app/` | The web portal (Vite + React + Supabase). Agents: Dial + Floor. Manager: + Funnel, Lists, Handoffs, Emails, Team. |
 | `supabase/migrations/` | The database schema, queue engine and seeds (already applied to project `dial-floor`, id `fevjrcxmktjwbaozbngo`). |
 | `supabase/functions/zoom-webhook/` | Edge function receiving Zoom `phone.*` webhooks (already deployed). |
 | `supabase/tests/` | Queue-engine tests: `supabase/tests/run.sh` applies every migration to a throwaway local Postgres and checks the dialing rules. |
@@ -36,9 +36,10 @@ project's public URL and publishable key.
 ## First-time setup (one sitting, ~1 hour)
 
 1. **Create logins** — Supabase Dashboard → Authentication → Add user (email +
-   password) for each agent and yourself. Then promote yourself:
+   password) for each agent and yourself. Then promote yourself (once, SQL editor):
    `update profiles set role = 'manager' where id = '<your-user-uuid>';`
-   (SQL editor). Agents default to the agent role.
+   Everyone else defaults to agent; from then on, names and roles are set on the
+   **Team** tab.
 2. **Zoom app** — follow `docs/ZOOM-SETUP.md` (S2S OAuth app, webhook
    subscription pointing at the deployed function, secret into the function's
    env).
@@ -87,9 +88,13 @@ project's public URL and publishable key.
   on the same tab; placeholders like `{business}`, `{city}`, `{agent}` (who took
   the call) and `{my_name}` fill in automatically. The three starter templates
   are drafts: read them and make them yours before sending.
-- Roles and deactivation are the manager's: agents can't change their own.
-  To take someone off the floor: `update profiles set active = false where id = '<uuid>';`
-  (they're served nothing and can't dial; a call already open can still be logged).
+- **Team** (managers): rename people, make someone a manager or an agent, and
+  take someone off the floor or bring them back. Agents can't change their own
+  role, and a manager can't demote or deactivate themselves, so there's always
+  an active manager. Someone off the floor is served nothing and can't dial (a
+  call already open can still be logged). Their scheduled callbacks and assigned
+  lists stay theirs, and the Team tab shows them until you push the callbacks
+  back (Floor) or reassign the lists (Lists).
 - The sync loop (`cd sync && npm run loop`) keeps leads flowing in and statuses
   flowing back. Run it on any always-on PC (Task Scheduler recipe in the
   console's own DEPLOY.md works the same here).

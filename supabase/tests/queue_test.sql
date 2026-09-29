@@ -267,6 +267,8 @@ begin
   perform t.fails('select public.bump_number_stats(''5555550000'', true)', 'permission denied');
   perform t.fails('select public.refresh_lead(1)', 'permission denied');
   perform t.fails('select public.funnel(1)', 'permission denied');
+  perform t.fails('select public.team()', 'permission denied');
+  perform t.fails('select public.set_member(t.uid(''A''), p_active => false)', 'permission denied');
 end $$;
 reset role;
 set role authenticated;
@@ -473,6 +475,57 @@ begin
   assert (select status = 'sent' and template = 'Follow-up' from email_queue where id = q), 'the queue records the template that went out';
   delete from email_templates where id = tpl;
   assert (select template from email_queue where id = q) = 'Follow-up', 'deleting a template keeps the history';
+end $$;
+reset role;
+
+\echo '21 · Team: managers rename, promote and deactivate; nobody can lock the team out'
+select t.reset() \g /dev/null
+set role authenticated;
+do $$
+declare r jsonb; n jsonb;
+begin
+  perform t.as_user('A');
+  perform t.fails('select * from public.team()', 'manager only');
+  perform t.fails('select public.set_member(t.uid(''A''), p_role => ''manager'')', 'manager only');
+  perform t.fails('select public.set_member(t.uid(''B''), p_active => false)', 'manager only');
+
+  perform t.as_user('M');
+  assert (select count(*) from public.team()) >= 3, 'the manager sees the whole team';
+  assert (select email from public.team() where id = t.uid('A')) = 'agent.a@test', 'with each login''s email';
+
+  r := public.set_member(t.uid('A'), p_name => '  Ana  ');
+  assert r->>'name' = 'Ana' and (select name from profiles where id = t.uid('A')) = 'Ana', 'rename (trimmed)';
+  perform t.fails('select public.set_member(t.uid(''A''), p_name => ''  '')', 'can''t be empty');
+  perform t.fails('select public.set_member(t.uid(''A''), p_role => ''owner'')', 'role must be');
+  perform t.fails('select public.set_member(t.uid(''M''), p_active => false)', 'yourself');
+  perform t.fails('select public.set_member(t.uid(''M''), p_role => ''agent'')', 'yourself');
+  perform t.fails('select public.set_member(''eeeeeeee-0000-0000-0000-00000000000e'', p_name => ''x'')', 'no such team member');
+  r := public.set_member(t.uid('M'), p_name => 'Boss');
+  assert r->>'role' = 'manager' and (r->>'active')::boolean, 'a manager can still rename themselves';
+
+  -- deactivate: served nothing, gone from the floor board, still listed on the team
+  perform public.set_member(t.uid('B'), p_active => false);
+  n := t.next('B');
+  assert n->>'error' like '%deactivated%', format('a deactivated agent is served nothing: %s', n);
+  perform t.as_user('M');
+  assert not exists (select 1 from v_floor_today where agent_id = t.uid('B')), 'off the floor board';
+  assert (select not active from public.team() where id = t.uid('B')), 'still on the team, marked inactive';
+  perform public.set_member(t.uid('B'), p_active => true);
+  assert t.name(t.next('B')) is not null, 'reactivated, they dial again';
+
+  -- promote an agent; the new manager can manage, and demote the first one
+  perform t.as_user('M');
+  perform public.set_member(t.uid('A'), p_role => 'manager');
+  perform t.as_user('A');
+  assert (select count(*) from public.team()) >= 3, 'the promoted agent now sees the team';
+  perform public.set_member(t.uid('M'), p_role => 'agent');
+  perform t.as_user('M');
+  perform t.fails('select * from public.team()', 'manager only');
+  -- put things back for anything that runs after (each one by the other manager)
+  perform t.as_user('A');
+  perform public.set_member(t.uid('M'), p_role => 'manager', p_name => 'manager');
+  perform t.as_user('M');
+  perform public.set_member(t.uid('A'), p_role => 'agent', p_name => 'agent.a');
 end $$;
 reset role;
 

@@ -109,6 +109,20 @@ export interface FunnelData {
   by_hour: (FunnelCounts & { hour: number })[]
 }
 
+/** team(): a member as the manager's Team page sees them. */
+export interface TeamMember {
+  id: string
+  name: string
+  role: Role
+  active: boolean
+  email: string | null
+  created_at: string
+  last_sign_in_at: string | null
+  /** scheduled callbacks and active lists still assigned to them */
+  callbacks: number
+  lists: number
+}
+
 /** Daily per-agent targets from kpi_targets (F4). */
 export interface Targets {
   dials: number | null
