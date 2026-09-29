@@ -375,4 +375,19 @@ begin
   assert (select status from v_floor_today where agent_id = t.uid('A')) = 'idle', 'a ping brings it back, status unchanged';
 end $$;
 
+\echo '18 · A lead''s history carries the AI call summary Zoom attached to an earlier call'
+select t.reset() \g /dev/null
+do $$
+declare att bigint; n jsonb;
+begin
+  att := t.dial('A', 'X');
+  perform t.log('A', att, 'no_answer');
+  update attempts set ai_summary = '{"summary":"Owner wants a quote","next_steps":"Call Friday"}' where id = att;
+  update lead_state set last_attempt_at = now() - interval '3 hours' where lead_id = t.lead('X');
+  n := t.next('B');
+  assert t.name(n) = 'X', format('X comes round again, got %s', t.name(n));
+  assert n->'history'->0->>'ai_summary' = 'Owner wants a quote' and n->'history'->0->>'next_steps' = 'Call Friday',
+    'the earlier call shows its summary';
+end $$;
+
 \echo 'all queue tests passed'

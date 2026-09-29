@@ -278,6 +278,12 @@ export default function Dial({ profile }: { profile: Profile | null }) {
                     <li key={i}>
                       {new Date(h.at).toLocaleDateString()} — {h.agent}: <b>{h.disposition ?? 'no outcome'}</b>
                       {h.note && <span className="muted"> · {h.note}</span>}
+                      {h.ai_summary && (
+                        <div className="aisum">
+                          {h.ai_summary}
+                          {h.next_steps && <div className="muted">Next: {h.next_steps}</div>}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>

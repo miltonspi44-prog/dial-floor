@@ -12,7 +12,24 @@ export interface Workspace {
   lead: LeadRow
   state: Record<string, unknown>
   intents: { key: string; label: string; confidence: number }[]
-  history: { at: string; agent: string; disposition: string | null; duration: number | null; note: string | null }[]
+  history: {
+    at: string; agent: string; disposition: string | null; duration: number | null; note: string | null
+    /** Zoom's AI call summary, once Zoom has sent it (a few minutes after the call). */
+    ai_summary: string | null; next_steps: string | null
+  }[]
+}
+
+/** A row of the Floor page's recent-calls table. */
+export interface RecentCall {
+  id: number
+  clicked_at: string
+  duration_seconds: number | null
+  call_result: string | null
+  disposition: string | null
+  matched: boolean
+  ai_summary: { summary?: string | null; next_steps?: string | null } | null
+  leads: { name: string } | null
+  profiles: { name: string } | null
 }
 
 export interface LeadRow {
@@ -101,3 +118,12 @@ export const CONNECTED_DISPOSITIONS: { key: string; code: string; label: string;
   { key: 'W', code: 'chance_website',      label: 'CHANCE GIVEN — website',  hint: 'exits to your system', needs: 'handoff' },
   { key: 'S', code: 'sale_closed',         label: 'SALE — SEO / receptionist', hint: 'exits to your system', needs: 'handoff' },
 ]
+
+const OUTCOME_LABELS: Record<string, string> = {
+  no_answer: 'No answer', voicemail: 'Voicemail', busy_failed: 'Busy / failed', disconnected: 'Disconnected',
+  skipped: 'Skipped',
+  ...Object.fromEntries(CONNECTED_DISPOSITIONS.map((d) => [d.code, d.label])),
+}
+export function dispositionLabel(code: string | null): string {
+  return code ? (OUTCOME_LABELS[code] ?? code) : 'not logged'
+}

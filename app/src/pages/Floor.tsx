@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase, fmtPhone, loadTargets } from '../lib/supabase'
-import type { FloorRow, Targets } from '../lib/types'
+import { dispositionLabel } from '../lib/types'
+import type { FloorRow, RecentCall, Targets } from '../lib/types'
 
 interface NumberRow {
   number: string
@@ -30,6 +31,13 @@ function statusLine(r: FloorRow): string {
   return r.since ? `${r.status} · ${since(r.since)}` : r.status
 }
 
+/** Talk time from Zoom, once its event has matched the call. */
+function talkTime(c: RecentCall): string {
+  if (!c.matched) return 'waiting for Zoom'
+  const s = c.duration_seconds ?? 0
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
 function Count({ value, target, label }: { value: number; target: number | null; label: string }) {
   return <span><b>{value}</b>{label}{target ? <span className="of"> / {target}</span> : null}</span>
 }
@@ -38,6 +46,7 @@ export default function Floor({ isManager }: { isManager: boolean }) {
   const [rows, setRows] = useState<FloorRow[]>([])
   const [numbers, setNumbers] = useState<NumberRow[]>([])
   const [callbacks, setCallbacks] = useState<CallbackRow[]>([])
+  const [calls, setCalls] = useState<RecentCall[]>([])
   const [targets, setTargets] = useState<Targets>({ dials: null, connects: null, handoffs: null })
   const [dropPts, setDropPts] = useState(10)
   const [toast, setToast] = useState<string | null>(null)
@@ -47,6 +56,10 @@ export default function Floor({ isManager }: { isManager: boolean }) {
       .then(({ data }) => setRows((data ?? []) as FloorRow[]))
     supabase.from('v_number_health').select('*').order('dials_7d', { ascending: false })
       .then(({ data }) => setNumbers((data ?? []) as NumberRow[]))
+    supabase.from('attempts')
+      .select('id, clicked_at, duration_seconds, call_result, disposition, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name)')
+      .order('clicked_at', { ascending: false }).limit(25)
+      .then(({ data }) => setCalls((data ?? []) as unknown as RecentCall[]))
     if (isManager) {
       supabase.from('callbacks')
         .select('id, due_at, lead_id, agent_id, leads(name), profiles!callbacks_agent_id_fkey(name)')
@@ -163,6 +176,34 @@ export default function Floor({ isManager }: { isManager: boolean }) {
           </div>
         </>
       )}
+
+      <div className="sectionhead"><h3>Recent calls</h3><span className="muted small">talk time from Zoom; the AI summary appears a few minutes after the call</span></div>
+      <div className="card">
+        {calls.length ? (
+          <table className="data">
+            <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>AI summary</th></tr></thead>
+            <tbody>
+              {calls.map((c) => (
+                <tr key={c.id}>
+                  <td>{new Date(c.clicked_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
+                  <td>{c.profiles?.name ?? '—'}</td>
+                  <td>{c.leads?.name ?? '—'}</td>
+                  <td>{talkTime(c)}</td>
+                  <td>{dispositionLabel(c.disposition)}</td>
+                  <td>
+                    {c.ai_summary?.summary ? (
+                      <div className="aisum">
+                        {c.ai_summary.summary}
+                        {c.ai_summary.next_steps && <div className="muted">Next: {c.ai_summary.next_steps}</div>}
+                      </div>
+                    ) : <span className="muted small">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <span className="muted small">No calls yet.</span>}
+      </div>
 
       <div className="sectionhead"><h3>Number health</h3><span className="muted small">a connect rate down {dropPts}+ points on the week = probable spam label — swap that number in Zoom</span></div>
       <div className="card">
