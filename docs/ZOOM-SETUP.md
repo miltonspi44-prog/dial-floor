@@ -46,6 +46,11 @@ That's the data spine working.
 
 ## 4 · AI Companion (only when you're ready for Fork 1-B)
 
+**Not available on the current Zoom plan (2026-09-29)**, so this section is
+parked: `ai_summaries_enabled` stays `false`, the S2S credentials in §2 aren't
+needed, and the portal shows no summary column. The webhook code for it stays
+in place, idle, in case summaries are added to the plan later.
+
 Admin portal → Account Settings → **Zoom Phone** → *Call summary with AI*:
 
 - The critical toggle: **"Play a prompt to call participant when call summary

@@ -100,4 +100,4 @@ Stored in `app_settings`; change them in the Supabase SQL editor, e.g.
 | `allow_general_pool` | `true` | Serve the general pool once lists and callbacks are empty |
 | `business_tz` | `"America/Los_Angeles"` | Timezone of the business day behind "today" counts and daily caps |
 | `spam_alert_drop_pts` | `10` | A number whose connect rate drops this many points week over week is flagged on the floor board |
-| `ai_summaries_enabled` | `false` | Fork 1-B: attach Zoom AI summaries (only after the silence test) |
+| `ai_summaries_enabled` | `false` | Leave off: this Zoom plan has no AI Companion call summaries, so calls are logged metadata-only (outcome, talk time, the agent's note). Turn on only if summaries are added (docs/ZOOM-SETUP.md §4) |

@@ -26,6 +26,7 @@ export interface RecentCall {
   duration_seconds: number | null
   call_result: string | null
   disposition: string | null
+  note: string | null
   matched: boolean
   ai_summary: { summary?: string | null; next_steps?: string | null } | null
   leads: { name: string } | null

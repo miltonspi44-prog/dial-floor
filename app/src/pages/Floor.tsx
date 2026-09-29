@@ -49,6 +49,7 @@ export default function Floor({ isManager }: { isManager: boolean }) {
   const [calls, setCalls] = useState<RecentCall[]>([])
   const [targets, setTargets] = useState<Targets>({ dials: null, connects: null, handoffs: null })
   const [dropPts, setDropPts] = useState(10)
+  const [aiOn, setAiOn] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
@@ -57,7 +58,7 @@ export default function Floor({ isManager }: { isManager: boolean }) {
     supabase.from('v_number_health').select('*').order('dials_7d', { ascending: false })
       .then(({ data }) => setNumbers((data ?? []) as NumberRow[]))
     supabase.from('attempts')
-      .select('id, clicked_at, duration_seconds, call_result, disposition, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name)')
+      .select('id, clicked_at, duration_seconds, call_result, disposition, note, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name)')
       .order('clicked_at', { ascending: false }).limit(25)
       .then(({ data }) => setCalls((data ?? []) as unknown as RecentCall[]))
     if (isManager) {
@@ -70,11 +71,17 @@ export default function Floor({ isManager }: { isManager: boolean }) {
 
   useEffect(() => {
     loadTargets().then(setTargets)
-    // the drop (in points, week over week) that flags a number: app_settings.spam_alert_drop_pts
-    supabase.from('app_settings').select('value').eq('key', 'spam_alert_drop_pts').maybeSingle()
+    // spam_alert_drop_pts: the week-over-week drop (in points) that flags a number;
+    // ai_summaries_enabled: off on a Zoom plan without AI Companion, so no summary column
+    supabase.from('app_settings').select('key, value').in('key', ['spam_alert_drop_pts', 'ai_summaries_enabled'])
       .then(({ data }) => {
-        const v = Number(data?.value)
-        if (Number.isFinite(v) && v > 0) setDropPts(v)
+        for (const s of data ?? []) {
+          if (s.key === 'spam_alert_drop_pts') {
+            const v = Number(s.value)
+            if (Number.isFinite(v) && v > 0) setDropPts(v)
+          }
+          if (s.key === 'ai_summaries_enabled') setAiOn(s.value === true || s.value === 'true')
+        }
       })
   }, [])
 
@@ -177,11 +184,11 @@ export default function Floor({ isManager }: { isManager: boolean }) {
         </>
       )}
 
-      <div className="sectionhead"><h3>Recent calls</h3><span className="muted small">talk time from Zoom; the AI summary appears a few minutes after the call</span></div>
+      <div className="sectionhead"><h3>Recent calls</h3><span className="muted small">talk time from Zoom{aiOn ? '; the AI summary appears a few minutes after the call' : ''}</span></div>
       <div className="card">
         {calls.length ? (
           <table className="data">
-            <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>AI summary</th></tr></thead>
+            <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>Note</th>{aiOn && <th>AI summary</th>}</tr></thead>
             <tbody>
               {calls.map((c) => (
                 <tr key={c.id}>
@@ -190,14 +197,17 @@ export default function Floor({ isManager }: { isManager: boolean }) {
                   <td>{c.leads?.name ?? '—'}</td>
                   <td>{talkTime(c)}</td>
                   <td>{dispositionLabel(c.disposition)}</td>
-                  <td>
-                    {c.ai_summary?.summary ? (
-                      <div className="aisum">
-                        {c.ai_summary.summary}
-                        {c.ai_summary.next_steps && <div className="muted">Next: {c.ai_summary.next_steps}</div>}
-                      </div>
-                    ) : <span className="muted small">—</span>}
-                  </td>
+                  <td>{c.note ?? <span className="muted small">—</span>}</td>
+                  {aiOn && (
+                    <td>
+                      {c.ai_summary?.summary ? (
+                        <div className="aisum">
+                          {c.ai_summary.summary}
+                          {c.ai_summary.next_steps && <div className="muted">Next: {c.ai_summary.next_steps}</div>}
+                        </div>
+                      ) : <span className="muted small">—</span>}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
