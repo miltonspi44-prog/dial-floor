@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import type { RadarData } from '../lib/types'
+import RecyclePanel from '../components/RecyclePanel'
 
 function trade(key: string): string {
   return key.replace(/_/g, ' ')
@@ -201,6 +202,8 @@ export default function Radar() {
           <Link to="/lists" className="small">all lists</Link>
         </div>
       </div>
+
+      <RecyclePanel />
       {toast && <div className="toast">{toast}</div>}
     </div>
   )

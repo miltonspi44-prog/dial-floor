@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase, fmtPhone, loadTargets } from '../lib/supabase'
-import { dispositionLabel, tapsByObjection } from '../lib/types'
+import { breakLabel, dispositionLabel, tapsByObjection } from '../lib/types'
 import { callBody, saveToLibrary, scenarioFor } from '../lib/library'
-import type { FloorRow, RecentCall, Targets } from '../lib/types'
+import type { FloorAlert, FloorRow, Leaderboard, PaceRow, RecentCall, Sprint, Targets } from '../lib/types'
+import AlertsPanel from '../components/AlertsPanel'
+import AlertSettingsCard from '../components/AlertSettingsCard'
+import LeaderboardCard from '../components/LeaderboardCard'
 
 interface NumberRow {
   number: string
@@ -27,8 +30,12 @@ function since(ts: string | null): string {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
-function statusLine(r: FloorRow): string {
+function statusLine(r: FloorRow, p: PaceRow | undefined): string {
   if (r.status === 'offline') return r.last_seen ? `offline · seen ${since(r.last_seen)} ago` : 'offline'
+  // a pause shows its reason (A4)
+  if (r.status === 'break' && p?.on_break) {
+    return `on ${breakLabel(p.break_reason).toLowerCase()}${p.break_note ? ` (${p.break_note})` : ''} · ${since(p.break_since)}`
+  }
   return r.since ? `${r.status} · ${since(r.since)}` : r.status
 }
 
@@ -43,7 +50,7 @@ function Count({ value, target, label }: { value: number; target: number | null;
   return <span><b>{value}</b>{label}{target ? <span className="of"> / {target}</span> : null}</span>
 }
 
-export default function Floor({ isManager }: { isManager: boolean }) {
+export default function Floor({ isManager, me }: { isManager: boolean; me: string }) {
   const [rows, setRows] = useState<FloorRow[]>([])
   const [numbers, setNumbers] = useState<NumberRow[]>([])
   const [callbacks, setCallbacks] = useState<CallbackRow[]>([])
@@ -52,14 +59,25 @@ export default function Floor({ isManager }: { isManager: boolean }) {
   const [dropPts, setDropPts] = useState(10)
   const [aiOn, setAiOn] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  // Phase 2: alerts (E4), pace per active hour (A4), the leaderboard and the race (E5)
+  const [alerts, setAlerts] = useState<FloorAlert[] | null>(null)
+  const [pace, setPace] = useState<Map<string, PaceRow>>(new Map())
+  const [board, setBoard] = useState<Leaderboard | null>(null)
+  const [sprint, setSprint] = useState<Sprint | null>(null)
+  const pending = useRef<number | null>(null)
 
   const refresh = useCallback(() => {
     supabase.from('v_floor_today').select('*').order('name')
       .then(({ data }) => setRows((data ?? []) as FloorRow[]))
+    supabase.rpc('floor_pace')
+      .then(({ data }) => setPace(new Map(((data ?? []) as PaceRow[]).map((p) => [p.agent_id, p]))))
+    supabase.rpc('floor_alerts').then(({ data }) => { if (data) setAlerts(data as FloorAlert[]) })
+    supabase.rpc('leaderboard', { p_period: 'today' }).then(({ data }) => { if (data) setBoard(data as Leaderboard) })
+    supabase.rpc('sprint_board').then(({ data }) => setSprint((data ?? null) as Sprint | null))
     supabase.from('v_number_health').select('*').order('dials_7d', { ascending: false })
       .then(({ data }) => setNumbers((data ?? []) as NumberRow[]))
     supabase.from('attempts')
-      .select('id, clicked_at, duration_seconds, call_result, disposition, note, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name), card_taps(counter, battlecards(objection))')
+      .select('id, agent_id, connected, clicked_at, duration_seconds, call_result, disposition, note, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name), card_taps(counter, battlecards(objection))')
       .order('clicked_at', { ascending: false }).limit(25)
       .then(({ data }) => setCalls((data ?? []) as unknown as RecentCall[]))
     if (isManager) {
@@ -88,12 +106,21 @@ export default function Floor({ isManager }: { isManager: boolean }) {
 
   useEffect(() => {
     refresh()
+    // every dial changes a tile: gather a burst of changes into one refresh
+    const soon = () => {
+      if (pending.current) return
+      pending.current = window.setTimeout(() => { pending.current = null; refresh() }, 1500)
+    }
     const chan = supabase
       .channel('floor')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'agent_status' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agent_status' }, soon)
       .subscribe()
     const iv = window.setInterval(refresh, 30000)
-    return () => { supabase.removeChannel(chan); window.clearInterval(iv) }
+    return () => {
+      supabase.removeChannel(chan)
+      window.clearInterval(iv)
+      if (pending.current) window.clearTimeout(pending.current)
+    }
   }, [refresh])
 
   function flash(m: string) {
@@ -122,35 +149,36 @@ export default function Floor({ isManager }: { isManager: boolean }) {
     flash(error ? error.message : 'Saved to the library (Playbook tab)')
   }
 
+  /** E5: one vote a day, for someone else's conversation today; voting again moves it. */
+  async function vote(c: RecentCall) {
+    const mine = board?.my_vote === c.id
+    const { error } = await supabase.rpc('vote_call', { p_attempt_id: mine ? null : c.id })
+    if (error) { flash(error.message); return }
+    flash(mine ? 'Vote taken back' : `Voted for ${c.profiles?.name ?? 'that'}'s call`)
+    supabase.rpc('leaderboard', { p_period: 'today' }).then(({ data }) => { if (data) setBoard(data as Leaderboard) })
+  }
+  const votable = (c: RecentCall) =>
+    !!board && !!c.disposition && !!c.connected && c.disposition !== 'gatekeeper_end' && Date.parse(c.clicked_at) >= Date.parse(board.from)
+
   function spamFlag(n: NumberRow): boolean {
     if (n.rate_7d == null) return false
     if (n.rate_prev_7d != null && n.rate_prev_7d - n.rate_7d >= dropPts) return true
     return (n.dials_7d ?? 0) >= 60 && n.rate_7d < 8
   }
-  const flagged = numbers.filter(spamFlag)
 
   return (
     <div className="page">
-      {flagged.length > 0 && (
-        <div className="card alertcard">
-          <b>Possible spam label</b>
-          {flagged.map((n) => (
-            <div key={n.number} className="small">
-              {fmtPhone(n.number)}: connect rate {n.rate_prev_7d != null ? `${n.rate_prev_7d}% → ` : ''}{n.rate_7d}% over the last 7 days
-            </div>
-          ))}
-          <div className="small">Swap it for a fresh number in Zoom, then watch the new one here.</div>
-        </div>
-      )}
+      <AlertsPanel alerts={alerts} isManager={isManager} />
 
       <div className="floorgrid">
         {rows.map((r) => {
           const pct = targets.dials ? Math.min(100, Math.round((100 * r.dials_today) / targets.dials)) : null
+          const p = pace.get(r.agent_id)
           return (
             <div className="card agenttile" key={r.agent_id}>
               <div className="aname"><span className={`statusdot ${r.status}`} />{r.name}</div>
               <div className="small muted" style={{ minHeight: 20 }}>
-                {statusLine(r)}
+                {statusLine(r, p)}
                 {r.lead_name && <> · {r.lead_name}</>}
               </div>
               {r.phone_display && (
@@ -168,18 +196,25 @@ export default function Floor({ isManager }: { isManager: boolean }) {
               {pct != null && (
                 <div className="targetbar" title={`${pct}% of today's dial target`}><i style={{ width: `${pct}%` }} /></div>
               )}
+              {p?.dials_per_hour != null && (
+                <div className="small muted tilepace">
+                  {Math.round(p.dials_per_hour)} dials/hr{p.talk_minutes_per_hour != null ? ` · talk ${Math.round(p.talk_minutes_per_hour)} min/hr` : ''}
+                </div>
+              )}
             </div>
           )
         })}
-        {!rows.length && <div className="muted">No active agents yet — create logins in Supabase Auth.</div>}
+        {!rows.length && <div className="muted">{isManager ? 'No one on the floor yet: add agents on the Users tab.' : 'No one on the floor yet.'}</div>}
       </div>
+
+      <LeaderboardCard today={board} sprint={sprint} me={me} isManager={isManager} onChanged={refresh} />
 
       {isManager && (
         <>
           <div className="sectionhead"><h3>Scheduled callbacks</h3><span className="muted small">locked to their agent — push back to the queue if needed</span></div>
           <div className="card">
             {callbacks.length ? (
-              <table className="data">
+              <div className="tablewrap"><table className="data">
                 <thead><tr><th>Due</th><th>Lead</th><th>Agent</th><th /></tr></thead>
                 <tbody>
                   {callbacks.map((c) => (
@@ -191,59 +226,74 @@ export default function Floor({ isManager }: { isManager: boolean }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             ) : <span className="muted small">None scheduled.</span>}
           </div>
         </>
       )}
 
-      <div className="sectionhead"><h3>Recent calls</h3><span className="muted small">talk time from Zoom{aiOn ? '; the AI summary appears a few minutes after the call' : ''}</span></div>
+      <div className="sectionhead"><h3>Recent calls</h3><span className="muted small">talk time from Zoom{aiOn ? '; the AI summary appears a few minutes after the call' : ''} · vote for today's call of the day</span></div>
       <div className="card">
         {calls.length ? (
-          <table className="data">
-            <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>Call log</th>{aiOn && <th>AI summary</th>}{isManager && <th />}</tr></thead>
-            <tbody>
-              {calls.map((c) => (
-                <tr key={c.id}>
-                  <td>{new Date(c.clicked_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
-                  <td>{c.profiles?.name ?? '—'}</td>
-                  <td>{c.leads?.name ?? '—'}</td>
-                  <td>{talkTime(c)}</td>
-                  <td>{dispositionLabel(c.disposition)}</td>
-                  <td>
-                    {tapsByObjection(c.card_taps ?? []).map((t) => (
-                      <div key={t.objection} className="small">
-                        heard “{t.objection}”{t.counters.length ? <span className="muted"> → said: {t.counters.join(' / ')}</span> : null}
-                      </div>
-                    ))}
-                    {c.note ? <div className="small">{c.note}</div> : !c.card_taps?.length && <span className="muted small">—</span>}
-                  </td>
-                  {aiOn && (
-                    <td>
-                      {c.ai_summary?.summary ? (
-                        <div className="aisum">
-                          {c.ai_summary.summary}
-                          {c.ai_summary.next_steps && <div className="muted">Next: {c.ai_summary.next_steps}</div>}
-                        </div>
-                      ) : <span className="muted small">—</span>}
-                    </td>
-                  )}
-                  {isManager && (
-                    <td className="rowactions">
-                      {c.disposition && <button className="btn ghost small" title="Keep this call in the Playbook library" onClick={() => keep(c)}>save</button>}
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="tablewrap">
+            <table className="data">
+              <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>Call log</th>{aiOn && <th>AI summary</th>}<th>Votes</th>{isManager && <th />}</tr></thead>
+              <tbody>
+                {calls.map((c) => {
+                  const votes = board?.votes[String(c.id)] ?? 0
+                  const mine = board?.my_vote === c.id
+                  return (
+                    <tr key={c.id} className={board?.call_of_the_day?.attempt_id === c.id ? 'cotd' : ''}>
+                      <td>{new Date(c.clicked_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</td>
+                      <td>{c.profiles?.name ?? '—'}</td>
+                      <td>{c.leads?.name ?? '—'}</td>
+                      <td>{talkTime(c)}</td>
+                      <td>{dispositionLabel(c.disposition)}</td>
+                      <td>
+                        {tapsByObjection(c.card_taps ?? []).map((t) => (
+                          <div key={t.objection} className="small">
+                            heard “{t.objection}”{t.counters.length ? <span className="muted"> → said: {t.counters.join(' / ')}</span> : null}
+                          </div>
+                        ))}
+                        {c.note ? <div className="small">{c.note}</div> : !c.card_taps?.length && <span className="muted small">—</span>}
+                      </td>
+                      {aiOn && (
+                        <td>
+                          {c.ai_summary?.summary ? (
+                            <div className="aisum">
+                              {c.ai_summary.summary}
+                              {c.ai_summary.next_steps && <div className="muted">Next: {c.ai_summary.next_steps}</div>}
+                            </div>
+                          ) : <span className="muted small">—</span>}
+                        </td>
+                      )}
+                      <td className="rowactions">
+                        {votes > 0 && <span className="votes">{votes}</span>}
+                        {votable(c) && c.agent_id !== me && (
+                          <button className={`btn ghost small ${mine ? 'voted' : ''}`} onClick={() => vote(c)}
+                            title={mine ? 'Take your vote back' : 'Your one vote today for the call of the day'}>
+                            {mine ? 'voted' : 'vote'}
+                          </button>
+                        )}
+                      </td>
+                      {isManager && (
+                        <td className="rowactions">
+                          {c.disposition && <button className="btn ghost small" title="Keep this call in the Playbook library" onClick={() => keep(c)}>save</button>}
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         ) : <span className="muted small">No calls yet.</span>}
       </div>
 
       <div className="sectionhead"><h3>Number health</h3><span className="muted small">a connect rate down {dropPts}+ points on the week = probable spam label — swap that number in Zoom</span></div>
       <div className="card">
         {numbers.length ? (
-          <table className="data">
+          <div className="tablewrap"><table className="data">
             <thead><tr><th>Number</th><th>Dials 7d</th><th>Connects 7d</th><th>Rate</th><th>Prev wk</th><th /></tr></thead>
             <tbody>
               {numbers.map((n) => (
@@ -257,9 +307,11 @@ export default function Floor({ isManager }: { isManager: boolean }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         ) : <span className="muted small">No dial data yet — stats appear after the first webhook-matched calls.</span>}
       </div>
+
+      {isManager && <AlertSettingsCard onSaved={refresh} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   )

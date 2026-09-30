@@ -85,7 +85,7 @@ export default function App() {
       </header>
       <Routes>
         <Route path="/dial" element={<Dial profile={profile} />} />
-        <Route path="/floor" element={<Floor isManager={isManager} />} />
+        <Route path="/floor" element={<Floor isManager={isManager} me={session.user.id} />} />
         <Route path="/coaching" element={<Coaching profile={profile} />} />
         {isManager && <Route path="/funnel" element={<Funnel />} />}
         {isManager && <Route path="/lists" element={<Lists />} />}

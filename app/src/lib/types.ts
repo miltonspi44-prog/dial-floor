@@ -23,7 +23,11 @@ export interface Workspace {
   ab?: AbOpener
   /** C4: on the never-answers list — the unanswered tries in their business hours, latest first. */
   missed?: { count: number; times: string[] }
+  /** G6: a warm referral — who sent us and what the agent noted. */
+  referral?: Referral
 }
+
+export interface Referral { from: string | null; agent: string | null; at: string; note: string | null }
 
 export interface CallTap { objection: string; counters: string[] }
 
@@ -32,6 +36,8 @@ export interface AbOpener { test_id: number; test: string; variant: string; text
 /** A row of the Floor page's recent-calls table. */
 export interface RecentCall {
   id: number
+  agent_id: string
+  connected: boolean | null
   clicked_at: string
   duration_seconds: number | null
   call_result: string | null
@@ -51,6 +57,7 @@ export interface LeadRow {
   phone_display: string | null
   phone_type: string | null
   category: string | null
+  category_key: string | null
   categories: string[] | null
   tier: string | null
   score: number | null
@@ -81,6 +88,7 @@ export interface NextLeadResult {
   history?: Workspace['history']
   ab?: AbOpener
   missed?: Workspace['missed']
+  referral?: Referral
   /** Set with reason 'resume': the call this agent started and never logged. */
   attempt_id?: number
   clicked_at?: string
@@ -246,6 +254,157 @@ export interface LibraryItem {
   pinned: boolean
   created_at: string
   updated_at: string
+}
+
+// ------------------------------------------------------------------ Phase 2 --
+
+export type BreakReason = 'break' | 'lunch' | 'meeting' | 'training' | 'tech' | 'other'
+export const BREAK_REASONS: { key: BreakReason; label: string }[] = [
+  { key: 'break', label: 'Break' },
+  { key: 'lunch', label: 'Lunch' },
+  { key: 'meeting', label: 'Meeting' },
+  { key: 'training', label: 'Training' },
+  { key: 'tech', label: 'Tech trouble' },
+  { key: 'other', label: 'Other' },
+]
+export function breakLabel(r: string | null | undefined): string {
+  return BREAK_REASONS.find((b) => b.key === r)?.label ?? 'Paused'
+}
+
+/** my_pace(): the Dial page's strip (A4). Rates are per active hour, null in the first quarter hour. */
+export interface Pace {
+  dials: number
+  connects: number
+  conversations: number
+  handoffs: number
+  talk_seconds: number
+  active_minutes: number
+  paused_minutes: number
+  dials_per_hour: number | null
+  talk_minutes_per_hour: number | null
+  target: number | null
+  shift_hours: number
+  target_per_hour: number | null
+  wrapup_seconds: number
+  break: { reason: BreakReason; note: string | null; since: string } | null
+}
+
+/** floor_pace(): today for each active member (A4, the floor board). */
+export interface PaceRow {
+  agent_id: string
+  dials: number
+  dials_per_hour: number | null
+  talk_minutes_per_hour: number | null
+  on_break: boolean
+  break_reason: BreakReason | null
+  break_note: string | null
+  break_since: string | null
+}
+
+/** floor_alerts() (E4). Keys are stable, so a notification fires once per event. */
+export interface FloorAlert {
+  key: string
+  kind: 'win' | 'idle' | 'long_call' | 'pace' | 'callback' | 'spam'
+  level: 'good' | 'warn'
+  agent: string | null
+  title: string
+  detail: string
+  at: string
+  number?: string
+}
+export interface AlertSettings {
+  idle_minutes: number
+  long_call_minutes: number
+  pace_pct: number
+  callback_overdue_minutes: number
+  celebrate: boolean
+  spam: boolean
+}
+
+/** recycle_pools() / recycle_preview() (B7). */
+export type RecyclePoolKey = 'provider' | 'resting' | 'season'
+export interface RecyclePool {
+  pool: RecyclePoolKey
+  total: number
+  /** parked at least this many days ago */
+  ages: Record<'30' | '90' | '180' | '365', number>
+  outcomes: Record<string, number>
+}
+export interface RecyclePools { auto_provider_days: number; pools: RecyclePool[] }
+export interface RecyclePreview {
+  count: number
+  sample: { lead_id: number; name: string; trade: string | null; city: string | null; state: string | null; outcome: string | null; parked_at: string }[]
+}
+
+/** best_times() (C6): pickup rate by trade and the lead's local hour. */
+export interface BestTimeCell { hour: number; dials: number; rate: number; lift: number; reliable?: boolean }
+export interface BestTimes {
+  state: { at: string; total: number; rate: number; min_total: number; min_dials: number; days: number } | null
+  ready: boolean
+  use_in_queue: boolean
+  hours: BestTimeCell[]
+  trades: { trade: string; label: string | null; dials: number; rate: number; cells: BestTimeCell[] }[]
+}
+
+/** leaderboard() and sprint_board() (E5): activity only. */
+export interface LeaderRow { agent_id: string; name: string; dials: number; conversations: number; streak: number }
+export interface CallOfTheDay {
+  attempt_id: number
+  votes: number
+  agent: string
+  lead: string
+  disposition: string
+  duration: number | null
+  note: string | null
+}
+export interface Leaderboard {
+  period: 'today' | 'week'
+  from: string
+  rows: LeaderRow[]
+  votes: Record<string, number>
+  my_vote: number | null
+  call_of_the_day: CallOfTheDay | null
+}
+export interface SprintRow { agent_id: string; name: string; count: number; reached_at: string | null }
+export interface Sprint {
+  id: number
+  name: string
+  metric: 'dials' | 'conversations'
+  goal: number | null
+  starts_at: string
+  ends_at: string
+  running: boolean
+  rows: SprintRow[]
+  winner: SprintRow | null
+}
+/** floor_pulse(): what the Dial page checks once a minute. */
+export interface Pulse { sprint: Sprint | null; wins: FloorAlert[] }
+
+/** scorecard() (E6). */
+export interface WeekCounts {
+  dials: number
+  days: number
+  picked_up: number
+  conversations: number
+  kept: number
+  won: number
+  talk_seconds: number
+  callbacks_set: number
+  cb_done: number
+  cb_missed: number
+}
+export interface Scorecard {
+  agent: { id: string; name: string } | null
+  this_week: string
+  weeks: { week: string; me: WeekCounts; floor: WeekCounts & { agents: number } }[]
+  handoffs: { at: string; lead: string; kind: string; summary: string | null; rating: number | null; outcome: string | null }[]
+  review: { attempt_id: number; at: string; lead: string; disposition: string; duration: number; note: string | null; objections: string[] }[]
+  saved: { id: number; title: string; scenario: string; at: string }[]
+}
+
+/** "8am" */
+export function hourLabel(h: number): string {
+  return `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`
 }
 
 /** Groups a call's taps into "objection → counters used" (A6 call log). */

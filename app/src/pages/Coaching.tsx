@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { dispositionLabel } from '../lib/types'
+import { dispositionLabel, hourLabel } from '../lib/types'
 import type { Digest, Insights, Profile } from '../lib/types'
+import ScorecardView from '../components/ScorecardView'
 
 function pct(v: number | null | undefined): string {
   return v == null ? '—' : `${Math.round(v * 100)}%`
 }
 function share(n: number, of: number): string {
   return of ? `${Math.round((100 * n) / of)}%` : '—'
-}
-function hourLabel(h: number): string {
-  return `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`
 }
 
 /** What each digest metric means, and the one concrete move when it is the thing to work on. */
@@ -28,7 +26,8 @@ export default function Coaching({ profile }: { profile: Profile | null }) {
   const isManager = profile?.role === 'manager'
   const [people, setPeople] = useState<Profile[]>([])
   const [who, setWho] = useState<string | null>(profile?.id ?? null)
-  const [days, setDays] = useState(1)
+  // 1 or 7: the digest; 'card': the weekly scorecard (E6)
+  const [days, setDays] = useState<number | 'card'>(1)
 
   useEffect(() => {
     if (!isManager) return
@@ -52,12 +51,12 @@ export default function Coaching({ profile }: { profile: Profile | null }) {
           </label>
         )}
         <div className="rangebar" role="group" aria-label="Period" style={{ margin: 0 }}>
-          {[[1, 'Today'], [7, 'Last 7 days']].map(([d, label]) => (
-            <button key={d} className={`rangebtn ${days === d ? 'active' : ''}`} onClick={() => setDays(d as number)}>{label}</button>
+          {([[1, 'Today'], [7, 'Last 7 days'], ['card', 'Weekly scorecard']] as const).map(([d, label]) => (
+            <button key={d} className={`rangebtn ${days === d ? 'active' : ''}`} onClick={() => setDays(d)}>{label}</button>
           ))}
         </div>
       </div>
-      {who && <DigestView agent={who} days={days} />}
+      {who && (days === 'card' ? <ScorecardView agent={who} /> : <DigestView agent={who} days={days} />)}
       {isManager && <InsightsView />}
     </div>
   )

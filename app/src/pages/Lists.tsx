@@ -7,7 +7,7 @@ interface ListRow {
   name: string
   list_date: string
   status: string
-  kind: 'manual' | 'radar'
+  kind: 'manual' | 'radar' | 'recycle' | 'referrals'
   agent_id: string | null
   profiles: { name: string } | null
   total?: number
@@ -109,7 +109,7 @@ export default function Lists() {
           <tbody>
             {lists.map((l) => (
               <tr key={l.id}>
-                <td>{l.name}{l.kind === 'radar' && <span className="tag" style={{ marginLeft: 8 }}>radar</span>}</td>
+                <td>{l.name}{l.kind !== 'manual' && <span className="tag" style={{ marginLeft: 8 }}>{l.kind}</span>}</td>
                 <td>{l.list_date}</td>
                 <td>{l.profiles?.name ?? '—'}</td>
                 <td>{l.served}/{l.total}</td>

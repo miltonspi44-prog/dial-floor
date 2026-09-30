@@ -368,7 +368,7 @@ table.data th {
   color: var(--muted); padding: 8px 10px 6px 0; border-bottom: 1px solid var(--line);
 }
 table.data td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-.sectionhead { display: flex; align-items: center; gap: 12px; margin: 22px 0 10px; }
+.sectionhead { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 22px 0 10px; }
 .sectionhead h3 { margin: 0; font-size: 17px; }
 .formrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .formrow label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
@@ -377,4 +377,85 @@ table.data td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); v
   position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: var(--paper);
   padding: 9px 16px; border-radius: 8px; font-size: 13.5px; z-index: 90;
+}
+
+/* ---------- phase 2: pacing (A4) ---------- */
+.statchip.behind { background: var(--warn-bg); color: var(--warn); }
+.statchip.behind b { color: var(--warn); }
+.btn.small { font-size: 13px; padding: 6px 11px; }
+.pausepanel { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; border-color: var(--accent); }
+.wrapchip {
+  font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
+  padding: 5px 11px; border-radius: 99px; background: var(--chip); color: var(--muted);
+}
+.wrapchip.over { background: var(--warn-bg); color: var(--warn); }
+.besthint { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.tilepace { margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+/* ---------- referrals (G6) ---------- */
+.proof.warm { border-left-color: var(--ok); background: var(--ok-bg); }
+.refsaved { font-size: 13.5px; padding: 8px 11px; margin-bottom: 10px; border-radius: 7px; background: var(--ok-bg); color: var(--ok); }
+.refgrid { display: flex; flex-wrap: wrap; gap: 10px; }
+.refgrid label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.refgrid input { min-width: 0; }
+
+/* ---------- alerts (E4) ---------- */
+.wincard { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); margin-bottom: 10px; font-size: 14.5px; }
+.wincard .muted { color: var(--ok); opacity: 0.8; }
+.alertspanel { margin-bottom: 12px; }
+.alertspanel .sectionhead .actionrow { gap: 6px; }
+.alertlist { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
+.alertlist li { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; border-top: 1px solid var(--line); }
+.alertlist li:first-child { border-top: 0; }
+.alertkind {
+  flex: 0 0 auto; min-width: 74px; text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 5px; background: var(--warn-bg); color: var(--warn);
+}
+.alertkind.spam, .alertkind.callback { background: var(--bad-bg); color: var(--bad); }
+.settingscard { margin-top: 22px; }
+.settingscard summary { cursor: pointer; font-weight: 700; font-size: 14.5px; }
+
+/* ---------- leaderboard, power hours, votes (E5) ---------- */
+.boardgrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.boardgrid > div { display: flex; flex-direction: column; gap: 12px; }
+@media (max-width: 900px) { .boardgrid { grid-template-columns: 1fr; } }
+table.data tr.me td { font-weight: 600; }
+.sprintbar {
+  font-size: 13.5px; padding: 8px 12px; margin-bottom: 12px; border-radius: 8px;
+  background: var(--accent-soft); color: var(--ink);
+}
+.sprintwin { color: var(--ok); font-weight: 600; }
+.sprintcard.live { border-color: var(--accent); }
+.sprintform .formrow input, .sprintform .formrow select { padding: 6px 8px; }
+table.data tr.cotd td { background: var(--ok-bg); }
+.votes {
+  display: inline-block; min-width: 22px; text-align: center; font-size: 12px; font-weight: 700;
+  padding: 1px 6px; border-radius: 99px; background: var(--ok-bg); color: var(--ok); margin-right: 4px;
+}
+.btn.voted { color: var(--ok); }
+
+/* ---------- recycling (B7) and best time (C6) ---------- */
+.radarcard.picked { border-color: var(--accent); }
+.agerow { display: flex; flex-direction: column; gap: 4px; width: 100%; margin-top: 4px; }
+.agebtns { display: flex; flex-wrap: wrap; gap: 4px; }
+.agebtns .btn { padding: 4px 9px; font-size: 12.5px; background: var(--chip); color: var(--ink); }
+.agebtns .btn:disabled { opacity: 0.4; cursor: default; }
+.btn.on { background: var(--accent-soft); color: var(--accent); }
+table.data tr.thin td { color: var(--muted); }
+table.data tr.thin .minibar i { opacity: 0.45; }
+
+/* ---------- scorecards (E6) ---------- */
+.scoretable td.cur { font-weight: 700; }
+.spark { display: block; overflow: visible; }
+.spark polyline { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.spark circle { fill: var(--accent); }
+.receipts { list-style: none; margin: 0; padding: 0; font-size: 13.5px; }
+.receipts li { padding: 6px 0; border-top: 1px solid var(--line); }
+.receipts li:first-child { border-top: 0; }
+
+@media print {
+  .topnav, .rangebar, .noprint, .toast, button { display: none !important; }
+  body { background: #fff; }
+  .page { padding: 0; max-width: none; }
+  .card { box-shadow: none; break-inside: avoid; }
 }
