@@ -136,6 +136,39 @@ export interface TeamMember {
   lists: number
 }
 
+/** digest(agent, days): D2 coaching. */
+export interface DigestAgg {
+  dials: number; picked_up: number; conversations: number; kept: number; won: number; noted: number; tapped: number
+  cb_done: number; cb_missed: number
+  days_active?: number; talk_seconds?: number; agent_days?: number
+}
+export interface Digest {
+  agent: { id: string; name: string } | null
+  from: string
+  days: number
+  me: DigestAgg
+  floor: DigestAgg
+  targets: { dials: number | null; connects: number | null; handoffs: number | null }
+  metrics: { key: string; value: number | null; reference: number | null; ratio: number | null; ok: boolean }[]
+  strengths: string[]
+  fix: string | null
+  best_hour: { hour: number; dials: number; rate: number } | null
+  objections: { objection: string; heard: number; kept: number; floor_rate: number | null; try: { text: string; uses: number; kept: number } | null }[]
+}
+
+/** insights(days): F2 outcome mining (managers). */
+export interface Insights {
+  from: string
+  days: number
+  conversations: number
+  kept: number
+  objections: { objection: string; heard: number; kept: number; won: number; best_counter: { text: string; uses: number; kept: number } | null }[]
+  no_objection: { calls: number; kept: number }
+  talk: { bucket: string; calls: number; kept: number; won: number }[]
+  outcomes: { disposition: string; calls: number }[]
+  words: { kept: { word: string; notes: number }[]; lost: { word: string; notes: number }[] }
+}
+
 /** radar(): the manager's Radar tab (C3 + C4). */
 export interface RadarData {
   date: string

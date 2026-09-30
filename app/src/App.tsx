@@ -13,6 +13,7 @@ import Funnel from './pages/Funnel'
 import Team from './pages/Team'
 import Playbook from './pages/Playbook'
 import Radar from './pages/Radar'
+import Coaching from './pages/Coaching'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -68,6 +69,7 @@ export default function App() {
         <nav>
           <NavLink to="/dial" className={({ isActive }) => (isActive ? 'active' : '')}>Dial</NavLink>
           <NavLink to="/floor" className={({ isActive }) => (isActive ? 'active' : '')}>Floor</NavLink>
+          <NavLink to="/coaching" className={({ isActive }) => (isActive ? 'active' : '')}>Coaching</NavLink>
           {isManager && <NavLink to="/radar" className={({ isActive }) => (isActive ? 'active' : '')}>Radar</NavLink>}
           {isManager && <NavLink to="/funnel" className={({ isActive }) => (isActive ? 'active' : '')}>Funnel</NavLink>}
           {isManager && <NavLink to="/lists" className={({ isActive }) => (isActive ? 'active' : '')}>Lists</NavLink>}
@@ -84,6 +86,7 @@ export default function App() {
       <Routes>
         <Route path="/dial" element={<Dial profile={profile} />} />
         <Route path="/floor" element={<Floor isManager={isManager} />} />
+        <Route path="/coaching" element={<Coaching profile={profile} />} />
         {isManager && <Route path="/funnel" element={<Funnel />} />}
         {isManager && <Route path="/lists" element={<Lists />} />}
         {isManager && <Route path="/ledger" element={<Ledger />} />}

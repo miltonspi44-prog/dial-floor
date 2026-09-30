@@ -275,6 +275,8 @@ begin
   perform t.fails('select public.radar()', 'permission denied');
   perform t.fails('select public.radar_daily()', 'permission denied');
   perform t.fails('select public.radar_deal_now()', 'permission denied');
+  perform t.fails(format('select public.digest(%L, 7)', t.uid('A')), 'permission denied');
+  perform t.fails('select public.insights(30)', 'permission denied');
   perform t.fails('select public.set_member(t.uid(''A''), p_active => false)', 'permission denied');
 end $$;
 reset role;
@@ -746,6 +748,71 @@ begin
     'trade (any of), city, website and freshness rules';
   update lists set status = 'done';
   assert (public.build_list('Plumbers', null, '{"category":"plumbing"}', 10)->>'count')::int = 0, 'no plumbers here';
+end $$;
+reset role;
+
+\echo '24 · Coaching: each agent''s digest against the floor and targets, and outcome mining without the gatekeeper calls'
+select t.reset() \g /dev/null
+do $$
+declare card bigint := (select id from battlecards where objection = 'Too expensive');
+begin
+  -- A: 40 dials today; 10 connected, one of them only a gatekeeper; 6 kept alive, 1 handoff, notes on every conversation
+  insert into attempts (lead_id, agent_id, clicked_at, connected, disposition, note, matched, duration_seconds)
+  select t.lead('X'), t.uid('A'), now() - interval '30 seconds',
+         i <= 10,
+         case when i <= 5 then 'callback' when i = 6 then 'chance_website' when i <= 9 then 'not_interested_soft'
+              when i = 10 then 'gatekeeper_end' else 'no_answer' end,
+         case when i <= 5 then 'wants the homepage first, call Friday' when i <= 9 then 'said the price is fine' end,
+         true, case when i <= 10 then 20 + i * 30 else 0 end
+    from generate_series(1, 40) i;
+  -- A tapped "too expensive" on three of the callbacks
+  insert into card_taps (attempt_id, card_id, agent_id, counter)
+  select id, card, t.uid('A'), 'first counter' from attempts where agent_id = t.uid('A') and disposition = 'callback' limit 3;
+  -- B: 40 dials; 10 conversations, 2 kept alive, notes on 2
+  insert into attempts (lead_id, agent_id, clicked_at, connected, disposition, note, matched, duration_seconds)
+  select t.lead('Y'), t.uid('B'), now() - interval '30 seconds',
+         i <= 10,
+         case when i <= 2 then 'callback' when i <= 10 then 'not_interested_hard' else 'no_answer' end,
+         case when i between 3 and 4 then 'price too high for them' end,
+         true, case when i <= 10 then 15 else 0 end
+    from generate_series(1, 40) i;
+end $$;
+set role authenticated;
+do $$
+declare d jsonb; f jsonb;
+begin
+  perform t.as_user('A');
+  d := public.digest(t.uid('A'), 1);
+  assert (d->'me'->>'dials')::int = 40 and (d->'me'->>'conversations')::int = 9 and (d->'me'->>'kept')::int = 6,
+    format('A: 40 dials, 9 conversations past the gatekeeper, 6 kept alive: %s', d->'me');
+  assert (d->'floor'->>'conversations')::int = 19, format('the floor: %s', d->'floor');
+  assert d->'strengths' = '["battlecards", "notes"]'::jsonb and d->>'fix' = 'pace',
+    format('going well: taps and notes; to work on: the pace against 400 a day. Got %s / %s', d->'strengths', d->'fix');
+  assert d->'objections'->0->>'objection' = 'Too expensive' and (d->'objections'->0->>'heard')::int = 3, format('objections: %s', d->'objections');
+  assert (d->'best_hour'->>'dials')::int = 40, 'the best hour, on the leads'' clock';
+  perform t.fails(format('select public.digest(%L, 7)', t.uid('B')), 'their own digest');
+  perform t.fails('select public.insights(30)', 'manager only');
+
+  perform t.as_user('B');
+  d := public.digest(t.uid('B'), 1);
+  assert d->>'fix' = 'pace' and not (d->'strengths' ? 'kept_rate'),
+    format('B: 0 handoffs in 10 is not yet evidence (the floor predicts 0.5); pace is the fix. Got %s / %s', d->'strengths', d->'fix');
+
+  perform t.as_user('M');
+  assert (public.digest(t.uid('A'), 7)->'me'->>'dials')::int = 40, 'a manager reads anyone''s digest';
+  f := public.insights(7);
+  assert (f->>'conversations')::int = 19 and (f->>'kept')::int = 8, format('conversations and kept: %s', f);
+  assert not exists (select 1 from jsonb_array_elements(f->'outcomes') o where o->>'disposition' = 'gatekeeper_end'),
+    'gatekeeper calls are left out';
+  assert f->'objections'->0->>'objection' = 'Too expensive' and (f->'objections'->0->>'kept')::int = 3
+     and f->'objections'->0->'best_counter'->>'text' = 'first counter', format('objections: %s', f->'objections');
+  assert (f->'no_objection'->>'calls')::int = 16, format('the calls without a tapped objection: %s', f->'no_objection');
+  assert exists (select 1 from jsonb_array_elements(f->'words'->'kept') w where w->>'word' = 'homepage' and (w->>'notes')::int = 5),
+    format('words in kept notes: %s', f->'words'->'kept');
+  assert exists (select 1 from jsonb_array_elements(f->'words'->'lost') w where w->>'word' = 'price'),
+    format('words in lost notes: %s', f->'words'->'lost');
+  assert not exists (select 1 from jsonb_array_elements(f->'words'->'lost') w where w->>'word' = 'them'), 'stop words are dropped';
+  assert (select sum((b->>'calls')::int) from jsonb_array_elements(f->'talk') b) = 19, 'every conversation lands in a talk-time bucket';
 end $$;
 reset role;
 
