@@ -51,7 +51,7 @@ begin
    where a.clicked_at >= now() - make_interval(days => v_days) and a.disposition is not null and a.disposition <> 'skipped';
   p0 := case when v_total > 0 then v_conn::numeric / v_total end;
 
-  delete from best_time_cells;
+  delete from best_time_cells where true;  -- a bare DELETE is refused on API sessions (Supabase's safeupdate)
   if p0 > 0 then
     insert into best_time_cells (trade, hour, dials, connects, rate, lift, reliable)
     with a as (
