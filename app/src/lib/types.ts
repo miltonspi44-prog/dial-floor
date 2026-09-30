@@ -16,8 +16,16 @@ export interface Workspace {
     at: string; agent: string; disposition: string | null; duration: number | null; note: string | null
     /** Zoom's AI call summary, once Zoom has sent it (a few minutes after the call). */
     ai_summary: string | null; next_steps: string | null
+    /** A6 call log: the objections tapped on that call and the counters used. */
+    taps: CallTap[]
   }[]
+  /** D6: the opener this lead gets from the running A/B test (lab switched on). */
+  ab?: AbOpener
 }
+
+export interface CallTap { objection: string; counters: string[] }
+
+export interface AbOpener { test_id: number; test: string; variant: string; text: string }
 
 /** A row of the Floor page's recent-calls table. */
 export interface RecentCall {
@@ -31,6 +39,7 @@ export interface RecentCall {
   ai_summary: { summary?: string | null; next_steps?: string | null } | null
   leads: { name: string } | null
   profiles: { name: string } | null
+  card_taps: { counter: string | null; battlecards: { objection: string } | null }[]
 }
 
 export interface LeadRow {
@@ -68,6 +77,7 @@ export interface NextLeadResult {
   state?: Record<string, unknown>
   intents?: Workspace['intents']
   history?: Workspace['history']
+  ab?: AbOpener
   /** Set with reason 'resume': the call this agent started and never logged. */
   attempt_id?: number
   clicked_at?: string
@@ -136,6 +146,72 @@ export interface Battlecard {
   counters: string[]
   sort: number
   active: boolean
+}
+
+/** battlecard_stats(days): how often each objection came up and which counters kept calls alive. */
+export interface CardStats {
+  card_id: number
+  objection: string
+  active: boolean
+  calls: number
+  kept: number
+  won: number
+  counters: { text: string; uses: number; kept: number; won: number }[]
+}
+
+export interface AbVariant { key: string; text: string }
+
+export interface AbTest {
+  id: number
+  name: string
+  variants: AbVariant[]
+  status: 'draft' | 'running' | 'stopped'
+  started_at: string | null
+  stopped_at: string | null
+  created_at: string
+}
+
+export interface AbResult {
+  variant: string
+  dials: number
+  picked_up: number
+  conversations: number
+  survived_30s: number
+  kept: number
+  won: number
+}
+
+export interface LibraryItem {
+  id: number
+  title: string
+  scenario: string
+  body: string
+  attempt_id: number | null
+  lead_name: string | null
+  agent_name: string | null
+  pinned: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** Groups a call's taps into "objection → counters used" (A6 call log). */
+export function tapsByObjection(taps: RecentCall['card_taps']): CallTap[] {
+  const m = new Map<string, Set<string>>()
+  for (const t of taps) {
+    const o = t.battlecards?.objection
+    if (!o) continue
+    if (!m.has(o)) m.set(o, new Set())
+    if (t.counter) m.get(o)!.add(t.counter)
+  }
+  return [...m].map(([objection, cs]) => ({ objection, counters: [...cs] }))
+}
+
+/** "2m 05s" / "45s" talk time. */
+export function talkTime(sec: number | null | undefined): string {
+  if (!sec) return ''
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return m ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`
 }
 
 /** Popup dispositions: only shown when a human answered. */

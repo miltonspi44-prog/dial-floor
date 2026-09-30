@@ -11,6 +11,7 @@ import Ledger from './pages/Ledger'
 import Emails from './pages/Emails'
 import Funnel from './pages/Funnel'
 import Team from './pages/Team'
+import Playbook from './pages/Playbook'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -54,7 +55,7 @@ export default function App() {
   if (!ready) return null
   if (!session) return <Login />
   // The manager routes only exist once the role is known; routing before that
-  // sent a manager who reloaded /lists (or /funnel, /ledger, /emails, /team) to /dial.
+  // sent a manager who reloaded /lists (or /funnel, /playbook, /ledger, /emails, /team) to /dial.
   if (profileFor !== session.user.id) return null
 
   const isManager = profile?.role === 'manager'
@@ -69,6 +70,7 @@ export default function App() {
           {isManager && <NavLink to="/funnel" className={({ isActive }) => (isActive ? 'active' : '')}>Funnel</NavLink>}
           {isManager && <NavLink to="/lists" className={({ isActive }) => (isActive ? 'active' : '')}>Lists</NavLink>}
           {isManager && <NavLink to="/ledger" className={({ isActive }) => (isActive ? 'active' : '')}>Handoffs</NavLink>}
+          {isManager && <NavLink to="/playbook" className={({ isActive }) => (isActive ? 'active' : '')}>Playbook</NavLink>}
           {isManager && <NavLink to="/emails" className={({ isActive }) => (isActive ? 'active' : '')}>Emails</NavLink>}
           {isManager && <NavLink to="/team" className={({ isActive }) => (isActive ? 'active' : '')}>Team</NavLink>}
         </nav>
@@ -85,6 +87,7 @@ export default function App() {
         {isManager && <Route path="/ledger" element={<Ledger />} />}
         {isManager && <Route path="/emails" element={<Emails myName={profile?.name ?? ''} />} />}
         {isManager && <Route path="/team" element={<Team me={session.user.id} />} />}
+        {isManager && <Route path="/playbook" element={<Playbook />} />}
         <Route path="*" element={<Navigate to="/dial" replace />} />
       </Routes>
     </>

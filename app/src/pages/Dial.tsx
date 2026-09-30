@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase, fmtPhone, zoomDial, loadTargets } from '../lib/supabase'
+import { dispositionLabel, talkTime } from '../lib/types'
 import type { LeadRow, NextLeadResult, Profile, Targets } from '../lib/types'
 import DispositionPopup from '../components/DispositionPopup'
 import Battlecards from '../components/Battlecards'
@@ -212,6 +213,13 @@ export default function Dial({ profile }: { profile: Profile | null }) {
                 ))}
               </div>
 
+              {ws?.ab && (
+                <div className="opener">
+                  <div className="kpilabel">Opener to use · A/B test “{ws.ab.test}”, version {ws.ab.variant}</div>
+                  <div>{ws.ab.text}</div>
+                </div>
+              )}
+
               <div className="actionzone">
                 {phase === 'ready' && (
                   <div className="actionrow">
@@ -276,8 +284,14 @@ export default function Dial({ profile }: { profile: Profile | null }) {
                 <ul className="hist">
                   {ws.history.map((h, i) => (
                     <li key={i}>
-                      {new Date(h.at).toLocaleDateString()} — {h.agent}: <b>{h.disposition ?? 'no outcome'}</b>
-                      {h.note && <span className="muted"> · {h.note}</span>}
+                      {new Date(h.at).toLocaleDateString()} — {h.agent}: <b>{dispositionLabel(h.disposition)}</b>
+                      {h.duration ? <span className="muted"> · {talkTime(h.duration)}</span> : null}
+                      {(h.taps ?? []).map((t) => (
+                        <div key={t.objection} className="small">
+                          heard “{t.objection}”{t.counters.length ? <span className="muted"> → said: {t.counters.join(' / ')}</span> : null}
+                        </div>
+                      ))}
+                      {h.note && <div className="muted small">{h.note}</div>}
                       {h.ai_summary && (
                         <div className="aisum">
                           {h.ai_summary}

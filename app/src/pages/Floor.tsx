@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase, fmtPhone, loadTargets } from '../lib/supabase'
-import { dispositionLabel } from '../lib/types'
+import { dispositionLabel, tapsByObjection } from '../lib/types'
+import { callBody, saveToLibrary, scenarioFor } from '../lib/library'
 import type { FloorRow, RecentCall, Targets } from '../lib/types'
 
 interface NumberRow {
@@ -58,7 +59,7 @@ export default function Floor({ isManager }: { isManager: boolean }) {
     supabase.from('v_number_health').select('*').order('dials_7d', { ascending: false })
       .then(({ data }) => setNumbers((data ?? []) as NumberRow[]))
     supabase.from('attempts')
-      .select('id, clicked_at, duration_seconds, call_result, disposition, note, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name)')
+      .select('id, clicked_at, duration_seconds, call_result, disposition, note, matched, ai_summary, leads(name), profiles!attempts_agent_id_fkey(name), card_taps(counter, battlecards(objection))')
       .order('clicked_at', { ascending: false }).limit(25)
       .then(({ data }) => setCalls((data ?? []) as unknown as RecentCall[]))
     if (isManager) {
@@ -107,6 +108,18 @@ export default function Floor({ isManager }: { isManager: boolean }) {
     const { error } = await supabase.rpc('release_lead', { p_lead_id: cb.lead_id })
     if (error) flash(error.message)
     refresh()
+  }
+
+  async function keep(c: RecentCall) {
+    const lead = c.leads?.name ?? 'a lead'
+    const { error } = await saveToLibrary({
+      title: `${lead}: ${dispositionLabel(c.disposition)}`,
+      scenario: scenarioFor(c.disposition),
+      body: callBody({ disposition: c.disposition, duration: c.duration_seconds, note: c.note,
+        taps: tapsByObjection(c.card_taps ?? []), summary: c.ai_summary?.summary }),
+      attempt_id: c.id, lead_name: c.leads?.name ?? null, agent_name: c.profiles?.name ?? null,
+    })
+    flash(error ? error.message : 'Saved to the library (Playbook tab)')
   }
 
   function spamFlag(n: NumberRow): boolean {
@@ -188,7 +201,7 @@ export default function Floor({ isManager }: { isManager: boolean }) {
       <div className="card">
         {calls.length ? (
           <table className="data">
-            <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>Note</th>{aiOn && <th>AI summary</th>}</tr></thead>
+            <thead><tr><th>When</th><th>Agent</th><th>Lead</th><th>Talk</th><th>Outcome</th><th>Call log</th>{aiOn && <th>AI summary</th>}{isManager && <th />}</tr></thead>
             <tbody>
               {calls.map((c) => (
                 <tr key={c.id}>
@@ -197,7 +210,14 @@ export default function Floor({ isManager }: { isManager: boolean }) {
                   <td>{c.leads?.name ?? '—'}</td>
                   <td>{talkTime(c)}</td>
                   <td>{dispositionLabel(c.disposition)}</td>
-                  <td>{c.note ?? <span className="muted small">—</span>}</td>
+                  <td>
+                    {tapsByObjection(c.card_taps ?? []).map((t) => (
+                      <div key={t.objection} className="small">
+                        heard “{t.objection}”{t.counters.length ? <span className="muted"> → said: {t.counters.join(' / ')}</span> : null}
+                      </div>
+                    ))}
+                    {c.note ? <div className="small">{c.note}</div> : !c.card_taps?.length && <span className="muted small">—</span>}
+                  </td>
                   {aiOn && (
                     <td>
                       {c.ai_summary?.summary ? (
@@ -206,6 +226,11 @@ export default function Floor({ isManager }: { isManager: boolean }) {
                           {c.ai_summary.next_steps && <div className="muted">Next: {c.ai_summary.next_steps}</div>}
                         </div>
                       ) : <span className="muted small">—</span>}
+                    </td>
+                  )}
+                  {isManager && (
+                    <td className="rowactions">
+                      {c.disposition && <button className="btn ghost small" title="Keep this call in the Playbook library" onClick={() => keep(c)}>save</button>}
                     </td>
                   )}
                 </tr>

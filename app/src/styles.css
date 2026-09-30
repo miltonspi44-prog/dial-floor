@@ -320,6 +320,23 @@ table.data tr.composerrow > td { background: var(--paper); padding: 12px 14px; }
 .phlist code { font-family: Consolas, monospace; font-size: 12px; background: var(--chip); color: var(--ink); padding: 1px 5px; border-radius: 4px; }
 .warnline { font-size: 12.5px; color: var(--warn); }
 
+/* ---------- playbook ---------- */
+.counters { list-style: none; padding-left: 0; }
+.counters li { margin: 5px 0; }
+.counterbtn {
+  text-align: left; width: 100%; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  border-radius: 7px; padding: 6px 9px; font-size: 13px; line-height: 1.4;
+}
+.counterbtn:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+.counterbtn:disabled { cursor: default; color: var(--ink); }
+.counterbtn.said { border-color: var(--ok); background: var(--ok-bg); }
+.saidmark { color: var(--ok); font-weight: 700; }
+.opener { margin-top: 10px; padding: 9px 12px; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 7px 7px 0; }
+.labcard-off { background: var(--paper); }
+.libgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.libitem { display: flex; flex-direction: column; gap: 6px; }
+.libbody { white-space: pre-wrap; font-size: 13.5px; line-height: 1.5; }
+
 /* ---------- tables ---------- */
 table.data { border-collapse: collapse; width: 100%; font-size: 13.5px; }
 table.data th {

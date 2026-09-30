@@ -268,6 +268,10 @@ begin
   perform t.fails('select public.refresh_lead(1)', 'permission denied');
   perform t.fails('select public.funnel(1)', 'permission denied');
   perform t.fails('select public.team()', 'permission denied');
+  perform t.fails('select public.battlecard_stats(30)', 'permission denied');
+  perform t.fails('select public.ab_results(1)', 'permission denied');
+  perform t.fails('select public.ab_set_status(1, ''running'')', 'permission denied');
+  assert (select count(*) from public.library_items) = 0, 'anon sees no library';
   perform t.fails('select public.set_member(t.uid(''A''), p_active => false)', 'permission denied');
 end $$;
 reset role;
@@ -528,5 +532,110 @@ begin
   perform public.set_member(t.uid('A'), p_role => 'agent', p_name => 'agent.a');
 end $$;
 reset role;
+
+\echo '22 · Playbook: counters ranked by the calls they kept alive, taps in each call''s log, the A/B lab off until switched on, a manager-only library'
+select t.reset() \g /dev/null
+set role authenticated;
+do $$
+declare att bigint; card bigint; s jsonb; c jsonb;
+begin
+  card := (select id from battlecards where objection = 'Too expensive');
+  -- A hears "too expensive", answers with the first counter, and gets a callback
+  att := t.dial('A', 'X');
+  insert into card_taps (attempt_id, card_id, agent_id) values (att, card, t.uid('A'));
+  insert into card_taps (attempt_id, card_id, agent_id, counter) values (att, card, t.uid('A'), 'first counter');
+  insert into card_taps (attempt_id, card_id, agent_id, counter) values (att, card, t.uid('A'), 'first counter'); -- a double tap counts once
+  perform t.log('A', att, 'callback', jsonb_build_object('due_at', now() + interval '1 day'));
+  perform t.fails(format('insert into card_taps (attempt_id, card_id, agent_id) values (%s, %s, %L)', att, card, t.uid('B')), 'row-level security');
+  -- B hears it too, tries the second counter, and loses the call (A's next lead is held for A)
+  att := t.dial('B', 'D1');
+  insert into card_taps (attempt_id, card_id, agent_id, counter) values (att, card, t.uid('B'), 'second counter');
+  perform t.log('B', att, 'not_interested_soft');
+
+  perform t.as_user('A');
+  s := (select x from jsonb_array_elements(public.battlecard_stats(30)) x where (x->>'card_id')::bigint = card);
+  assert (s->>'calls')::int = 2 and (s->>'kept')::int = 1, format('heard in 2 calls, 1 kept alive: %s', s);
+  c := s->'counters';
+  assert jsonb_array_length(c) = 2 and c->0->>'text' = 'first counter' and (c->0->>'uses')::int = 1 and (c->0->>'kept')::int = 1
+     and c->1->>'text' = 'second counter' and (c->1->>'kept')::int = 0, format('the counter that kept a call alive ranks first: %s', c);
+end $$;
+reset role;
+do $$
+declare h jsonb;
+begin
+  h := public.build_workspace(t.lead('X'), 'peek')->'history'->0;
+  assert h->'taps'->0->>'objection' = 'Too expensive' and h->'taps'->0->'counters' = '["first counter"]'::jsonb,
+    format('the call log shows the objection and the counter used: %s', h);
+  assert h->>'disposition' = 'callback', 'next to the outcome';
+end $$;
+
+-- D6 (logging a call reserves the agent's next lead: clear holds between steps)
+update lead_state set reserved_by = null, reserved_until = null;
+set role authenticated;
+do $$
+declare tst bigint; tst2 bigint; tst3 bigint; att bigint; r jsonb;
+begin
+  perform t.as_user('M');
+  insert into ab_tests (name, variants) values ('Opener', '[{"key":"A","text":"Hi, opener A"},{"key":"B","text":"Hi, opener B"}]') returning id into tst;
+  perform public.ab_set_status(tst, 'running');
+  assert (select status = 'running' and started_at is not null from ab_tests where id = tst), 'the test runs';
+
+  att := t.dial('A', 'Z');
+  assert (select ab_test_id is null from attempts where id = att), 'the lab switch is off: no opener recorded';
+
+  perform t.as_user('M');
+  update app_settings set value = 'true' where key = 'ab_lab_enabled';
+  att := t.dial('A', 'W');
+  assert (select ab_test_id = tst and ab_variant in ('A', 'B') from attempts where id = att), 'switched on: the dial records its opener';
+  perform t.log('A', att, 'email_requested', '{"email":"w@x.test"}');
+
+  perform t.as_user('A');
+  perform t.fails(format('select public.ab_set_status(%s, ''stopped'')', tst), 'manager only');
+  perform t.fails(format('select public.ab_results(%s)', tst), 'manager only');
+
+  perform t.as_user('M');
+  r := public.ab_results(tst);
+  assert jsonb_array_length(r) = 1 and (r->0->>'dials')::int = 1 and (r->0->>'kept')::int = 1, format('results: %s', r);
+  perform t.fails(format('update ab_tests set variants = ''[{"key":"A","text":"x"},{"key":"B","text":"y"}]'' where id = %s', tst), 'already run');
+
+  insert into ab_tests (name, variants) values ('One-sided', '[{"key":"A","text":"only one"}]') returning id into tst2;
+  perform t.fails(format('select public.ab_set_status(%s, ''running'')', tst2), 'at least two variants');
+  insert into ab_tests (name, variants) values ('Next', '[{"key":"A","text":"a"},{"key":"B","text":"b"},{"key":"C","text":"c"}]') returning id into tst3;
+  perform public.ab_set_status(tst3, 'running');
+  assert (select status = 'stopped' and stopped_at is not null from ab_tests where id = tst), 'starting a test stops the one running';
+  assert (select count(*) from ab_tests where status = 'running') = 1, 'one test at a time';
+  perform public.ab_set_status(tst3, 'stopped');
+  update app_settings set value = 'false' where key = 'ab_lab_enabled';
+end $$;
+reset role;
+do $$
+declare w jsonb;
+begin
+  -- the opener on screen is the one the dial recorded
+  update app_settings set value = 'true' where key = 'ab_lab_enabled';
+  update ab_tests set status = 'running', stopped_at = null where name = 'Opener';
+  w := public.build_workspace(t.lead('W'), 'peek');
+  assert w->'ab'->>'variant' = (select ab_variant from attempts where lead_id = t.lead('W') order by id desc limit 1),
+    format('same opener on screen and on record: %s', w->'ab');
+  update ab_tests set status = 'stopped' where name = 'Opener';
+  update app_settings set value = 'false' where key = 'ab_lab_enabled';
+  assert not (public.build_workspace(t.lead('W'), 'peek') ? 'ab'), 'no opener while the lab is off';
+end $$;
+
+-- D5
+set role authenticated;
+do $$
+begin
+  perform t.as_user('M');
+  insert into library_items (title, scenario, body) values ('Price save', 'Price objection', 'We build it first…');
+  assert (select count(*) from library_items) = 1, 'the manager keeps talk tracks';
+  perform t.as_user('A');
+  assert (select count(*) from library_items) = 0, 'agents don''t see the library';
+  perform t.fails('insert into library_items (title) values (''mine'')', 'row-level security');
+  perform t.as_user('M');
+  delete from library_items;
+end $$;
+reset role;
+delete from ab_tests;
 
 \echo 'all queue tests passed'

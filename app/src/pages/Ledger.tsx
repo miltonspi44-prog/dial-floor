@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase, fmtPhone } from '../lib/supabase'
+import { saveToLibrary } from '../lib/library'
 
 interface LedgerRow {
   id: number
@@ -18,6 +19,7 @@ interface LedgerRow {
 export default function Ledger() {
   const [rows, setRows] = useState<LedgerRow[]>([])
   const [note, setNote] = useState<Record<number, string>>({})
+  const [toast, setToast] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     supabase.from('handoff_ledger')
@@ -28,6 +30,20 @@ export default function Ledger() {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+
+  async function keep(r: LedgerRow) {
+    const lead = r.lead_snapshot?.name ?? 'a lead'
+    const kind = r.kind === 'chance_website' ? 'Website chance' : 'SEO/receptionist sale'
+    const { error } = await saveToLibrary({
+      title: `${lead}: ${kind}`,
+      scenario: r.kind === 'chance_website' ? 'Website pitch' : 'Google visibility pitch',
+      body: [`Outcome: ${kind}`, r.summary && `What was said: ${r.summary}`, r.rating && `Lead rating: ${r.rating}/5`]
+        .filter(Boolean).join('\n'),
+      lead_name: r.lead_snapshot?.name ?? null, agent_name: r.profiles?.name ?? null,
+    })
+    setToast(error ? error.message : 'Saved to the library (Playbook tab)')
+    window.setTimeout(() => setToast(null), 2500)
+  }
 
   async function setOutcome(id: number, outcome: 'closed' | 'not_closed') {
     await supabase.from('handoff_ledger').update({
@@ -44,7 +60,7 @@ export default function Ledger() {
       <div className="sectionhead"><h3>Handoff ledger</h3><span className="muted small">these leads exited the dialer (internal DNC); record here whether the sale landed</span></div>
       <div className="card">
         <table className="data">
-          <thead><tr><th>When</th><th>Lead</th><th>Kind</th><th>Agent</th><th>What was said</th><th>★</th><th>Sale outcome</th></tr></thead>
+          <thead><tr><th>When</th><th>Lead</th><th>Kind</th><th>Agent</th><th>What was said</th><th>★</th><th>Sale outcome</th><th /></tr></thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
@@ -69,12 +85,16 @@ export default function Ledger() {
                       </div>
                     )}
                 </td>
+                <td className="rowactions">
+                  <button className="btn ghost small" title="Keep this call in the Playbook library" onClick={() => keep(r)}>save</button>
+                </td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan={7} className="muted">No handoffs yet — they appear the moment an agent hits W or S.</td></tr>}
+            {!rows.length && <tr><td colSpan={8} className="muted">No handoffs yet — they appear the moment an agent hits W or S.</td></tr>}
           </tbody>
         </table>
       </div>
+      {toast && <div className="toast">{toast}</div>}
     </div>
   )
 }
