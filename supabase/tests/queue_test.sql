@@ -52,7 +52,7 @@ end $$;
 create function t.reset() returns void language plpgsql as $$
 begin
   truncate attempts, callbacks, suppression, lists, list_items, handoff_ledger, email_queue,
-           agent_status, card_taps, number_stats restart identity cascade;
+           agent_status, card_taps, number_stats, agent_breaks, sprints, call_votes, referrals restart identity cascade;
   update lead_state set state = 'queued', owner_agent = null, rest_until = null, attempts_total = 0,
     attempts_today = 0, attempts_today_date = null, connects_total = 0, last_attempt_at = null,
     in_progress_since = null, reserved_by = null, reserved_until = null,
@@ -279,6 +279,26 @@ begin
   perform t.fails('select public.insights(30)', 'permission denied');
   perform t.fails(format('select public.release_member(%L)', t.uid('A')), 'permission denied');
   perform t.fails('select public.set_member(t.uid(''A''), p_active => false)', 'permission denied');
+  -- Phase 2
+  perform t.fails('select public.pause_work(''lunch'')', 'permission denied');
+  perform t.fails('select public.resume_work()', 'permission denied');
+  perform t.fails('select public.my_pace()', 'permission denied');
+  perform t.fails('select * from public.floor_pace()', 'permission denied');
+  perform t.fails('select public.floor_alerts()', 'permission denied');
+  perform t.fails('select public.recycle_pools()', 'permission denied');
+  perform t.fails('select public.recycle_preview(''provider'', 0)', 'permission denied');
+  perform t.fails('select public.recycle(''provider'', 0)', 'permission denied');
+  perform t.fails('select * from public.recycle_candidates(''provider'')', 'permission denied');
+  perform t.fails('select public.best_times()', 'permission denied');
+  perform t.fails('select public.leaderboard(''today'')', 'permission denied');
+  perform t.fails('select * from public.streaks()', 'permission denied');
+  perform t.fails('select public.start_sprint(''x'', ''dials'', 30)', 'permission denied');
+  perform t.fails('select public.end_sprint()', 'permission denied');
+  perform t.fails('select public.sprint_board()', 'permission denied');
+  perform t.fails('select public.vote_call(1)', 'permission denied');
+  perform t.fails('select public.floor_pulse()', 'permission denied');
+  perform t.fails(format('select public.scorecard(%L)', t.uid('A')), 'permission denied');
+  perform t.fails('select public.add_referral(1, ''x'', ''3055550000'')', 'permission denied');
 end $$;
 reset role;
 set role authenticated;
@@ -291,6 +311,8 @@ begin
   perform t.fails('select public.wake_rested()', 'permission denied');
   perform t.fails('select public.refresh_lead(1)', 'permission denied');
   perform t.fails('select public.bump_number_stats(''5555550000'', true)', 'permission denied');
+  perform t.fails('select public.best_time_refresh()', 'permission denied');
+  perform t.fails('select public.recycle_leads(array[1]::bigint[], ''provider'')', 'permission denied');
 end $$;
 reset role;
 set role service_role;
@@ -859,6 +881,398 @@ set role authenticated;
 do $$ begin
   perform t.as_user('M');
   assert (select removed from public.team() where id = 'eeeeeeee-0000-0000-0000-00000000000e'), 'a blocked login shows as removed';
+end $$;
+reset role;
+
+\echo '26 · Pacing: a pause needs a reason and is left out of pace; dials and talk per active hour against the target spread over the shift'
+select t.reset() \g /dev/null
+update profiles set active = false  -- the signups from groups 13 and 25: off the floor
+ where id in ('dddddddd-0000-0000-0000-00000000000d', 'eeeeeeee-0000-0000-0000-00000000000e');
+set role authenticated;
+do $$
+declare att bigint; p jsonb;
+begin
+  perform t.as_user('A');
+  assert t.name(public.next_lead()) = 'X';
+  perform t.fails('select public.pause_work(null)', 'pick a reason');
+  perform t.fails('select public.pause_work(''nap'')', 'pick a reason');
+  perform t.fails('select public.pause_work(''other'', ''  '')', 'say what the pause is for');
+  att := t.dial('A', 'X');
+  perform t.fails('select public.pause_work(''lunch'')', 'log the call you are on first');
+  perform t.log('A', att, 'no_answer');
+  assert exists (select 1 from lead_state where reserved_by = t.uid('A')), 'the next lead is up';
+  p := public.pause_work('lunch');
+  assert p->>'reason' = 'lunch';
+  assert (select status from agent_status where agent_id = t.uid('A')) = 'break', 'the floor board shows the pause';
+  assert not exists (select 1 from lead_state where reserved_by = t.uid('A')), 'the lead on screen goes back';
+  assert public.my_pace()->'break'->>'reason' = 'lunch', 'the Dial page knows it is paused';
+  assert public.pause_work('break')->>'reason' = 'lunch', 'pausing again keeps the one pause';
+  assert (public.resume_work()->>'resumed')::boolean;
+  assert jsonb_typeof(public.my_pace()->'break') = 'null' and not exists (select 1 from agent_breaks where ended_at is null), 'the pause is over';
+  assert (select status from agent_status where agent_id = t.uid('A')) = 'idle';
+  assert not (public.resume_work()->>'resumed')::boolean, 'resuming twice is harmless';
+end $$;
+reset role;
+-- two hours on the floor with a half-hour lunch in the middle: 1.5 active hours
+update attempts set clicked_at = now() - interval '2 hours' where agent_id = t.uid('A');
+insert into attempts (lead_id, agent_id, clicked_at, connected, disposition, call_result, duration_seconds, matched)
+select t.lead('Z'), t.uid('A'), now() - interval '1 hour' + make_interval(mins => i), i <= 3,
+       case when i <= 3 then 'callback' else 'no_answer' end, case when i <= 3 then 'answered' end,
+       case when i <= 3 then 300 else 0 end, true
+  from generate_series(1, 44) i;
+delete from agent_breaks;
+insert into agent_breaks (agent_id, reason, started_at, ended_at)
+  values (t.uid('A'), 'lunch', now() - interval '90 minutes', now() - interval '60 minutes');
+set role authenticated;
+do $$
+declare p jsonb;
+begin
+  perform t.as_user('A');
+  p := public.my_pace();
+  -- 45 dials in 1.5 active hours = 30 an hour; 3 answered calls × 5 min = 15 min of talk = 10 a hour
+  assert (p->>'dials')::int = 45, format('dials: %s', p);
+  assert abs((p->>'dials_per_hour')::numeric - 30) < 0.5, format('30 dials an active hour: %s', p->>'dials_per_hour');
+  assert abs((p->>'talk_minutes_per_hour')::numeric - 10) < 0.3, format('10 talk minutes an hour: %s', p->>'talk_minutes_per_hour');
+  assert (p->>'paused_minutes')::int = 30, format('paused: %s', p->>'paused_minutes');
+  assert (p->>'target_per_hour')::numeric = 50, 'a 400 target over an 8-hour shift is 50 an hour';
+  assert (p->>'wrapup_seconds')::int = 20;
+end $$;
+reset role;
+
+\echo '27 · Alerts: idle, a long call, behind pace, an overdue callback and a collapsing number reach managers; everyone hears the bell'
+-- continues from 26: A is 1.5 active hours in at 30 an hour, on pace for 240 of 400
+update agent_status set status = 'idle', since = now() - interval '25 minutes', updated_at = now() where agent_id = t.uid('A');
+insert into agent_status (agent_id, status, lead_name, since, updated_at)
+  values (t.uid('B'), 'dialing', 'W', now() - interval '20 minutes', now())
+  on conflict (agent_id) do update set status = 'dialing', lead_name = 'W', since = excluded.since, updated_at = now();
+insert into callbacks (lead_id, agent_id, due_at) values (t.lead('D1'), t.uid('B'), now() - interval '40 minutes');
+insert into number_stats (number, stat_date, dials, connects) values
+  ('3055551111', business_date() - 10, 100, 25), ('3055551111', business_date() - 1, 100, 5);
+update lead_state set reserved_by = null, reserved_until = null;
+set role authenticated;
+do $$
+declare al jsonb; att bigint;
+begin
+  perform t.as_user('M');
+  al := public.floor_alerts();
+  assert exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'idle' and x->>'key' like 'idle:' || t.uid('A') || ':%'), format('A idle: %s', al);
+  assert exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'long_call' and x->>'key' like 'long:' || t.uid('B') || ':%'), 'B on one call 20 min';
+  assert exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'pace' and x->>'key' like 'pace:' || t.uid('A') || ':%'), 'A behind pace';
+  assert exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'callback' and x->>'title' like '%D1'), 'B''s callback 40 min overdue';
+  assert exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'spam' and x->>'number' = '3055551111'), 'a number down from 25% to 5%';
+  assert not exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'win');
+
+  perform t.as_user('B');
+  assert jsonb_array_length(public.floor_alerts()) = 0, 'agents only hear the bell';
+  -- A hands off: the bell rings for everyone, and A is no longer idle
+  att := t.dial('A', 'W');
+  perform t.log('A', att, 'chance_website', '{"summary": "homepage first", "rating": 4}');
+  perform t.as_user('B');
+  al := public.floor_alerts();
+  assert jsonb_array_length(al) = 1 and al->0->>'kind' = 'win' and al->0->>'key' = 'win:' || att and al->0->>'detail' = 'W', format('the bell: %s', al);
+  perform t.as_user('M');
+  al := public.floor_alerts();
+  assert exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'win');
+  assert not exists (select 1 from jsonb_array_elements(al) x where x->>'kind' = 'idle'), 'dialing ends the idle alert';
+end $$;
+reset role;
+update app_settings set value = '{"idle_minutes": 0, "long_call_minutes": 0, "pace_pct": 0, "callback_overdue_minutes": 0, "celebrate": false, "spam": false}'
+ where key = 'alerts';
+set role authenticated;
+do $$ begin
+  perform t.as_user('M');
+  assert jsonb_array_length(public.floor_alerts()) = 0, 'every alert can be switched off';
+end $$;
+reset role;
+update app_settings set value = '{"idle_minutes": 10, "long_call_minutes": 15, "pace_pct": 80, "callback_overdue_minutes": 15, "celebrate": true, "spam": true}'
+ where key = 'alerts';
+
+\echo '28 · Recycling: parked leads come back when the manager says (or after N days when switched on); "has a provider" returns as a win-back'
+select t.reset() \g /dev/null
+set role authenticated;
+do $$
+declare att bigint;
+begin
+  att := t.dial('A', 'X'); perform t.log('A', att, 'has_provider');
+  att := t.dial('A', 'Y'); perform t.log('A', att, 'not_interested_soft');
+  att := t.dial('A', 'Z'); perform t.log('A', att, 'has_provider');
+end $$;
+reset role;
+-- X said "we have someone" 200 days ago, Z 40 days ago; Y said no 20 days ago and still rests
+update attempts set clicked_at = now() - interval '200 days', disposed_at = now() - interval '200 days' where lead_id = t.lead('X');
+update attempts set clicked_at = now() - interval '40 days', disposed_at = now() - interval '40 days' where lead_id = t.lead('Z');
+update attempts set clicked_at = now() - interval '20 days', disposed_at = now() - interval '20 days' where lead_id = t.lead('Y');
+set role authenticated;
+do $$
+declare p jsonb; r jsonb;
+begin
+  perform t.as_user('A');
+  perform t.fails('select public.recycle_pools()', 'manager only');
+  perform t.fails('select public.recycle(''provider'', 0)', 'manager only');
+  perform t.as_user('M');
+  p := public.recycle_pools();
+  assert p->'pools'->0->>'pool' = 'provider' and (p->'pools'->0->>'total')::int = 2
+     and (p->'pools'->0->'ages'->>'30')::int = 2 and (p->'pools'->0->'ages'->>'180')::int = 1, format('provider pool: %s', p->'pools'->0);
+  assert (p->'pools'->1->>'total')::int = 1 and (p->'pools'->1->'outcomes'->>'not_interested_soft')::int = 1, format('resting pool: %s', p->'pools'->1);
+  assert (p->>'auto_provider_days')::int = 0, 'automatic recycling starts off';
+  assert (public.recycle_preview('provider', 180)->>'count')::int = 1 and public.recycle_preview('provider', 180)->'sample'->0->>'name' = 'X';
+  assert (public.recycle_preview('provider', 365)->>'count')::int = 0;
+  perform t.fails('select public.recycle(''everyone'', 0)', 'unknown pool');
+
+  r := public.recycle('provider', 180, true);
+  assert (r->>'recycled')::int = 1 and (r->>'listed')::int = 1, format('recycled: %s', r);
+  assert (select state from lead_state where lead_id = t.lead('X')) = 'queued', 'X is back in the queue';
+  assert exists (select 1 from lead_intents where lead_id = t.lead('X') and intent_key = 'provider_winback'), 'as a win-back';
+  assert (select kind = 'recycle' and agent_id is null from lists where id = (r->>'list_id')::bigint), 'on a shared list';
+  assert (select state from lead_state where lead_id = t.lead('Z')) = 'provider_list', 'Z (40 days) stays parked';
+
+  r := public.recycle('resting', 0);
+  assert (r->>'recycled')::int = 1 and r->>'list_id' is null, format('resting: %s', r);
+  assert (select state = 'queued' and rest_until is null from lead_state where lead_id = t.lead('Y')), 'Y is back before its rest ends';
+end $$;
+reset role;
+-- in season: a resting lead whose trade's season is open (group 23's all-year siding season)
+update leads set category_key = 'siding' where name = 'W';
+update lead_state set reserved_by = null, reserved_until = null;  -- A's logged calls hold A's next lead
+set role authenticated;
+do $$
+declare att bigint; r jsonb;
+begin
+  att := t.dial('B', 'W'); perform t.log('B', att, 'not_interested_hard');
+  perform t.as_user('M');
+  assert (public.recycle_preview('season', 0)->>'count')::int = 1, 'W rests in an open season';
+  r := public.recycle('season', 0);  -- its own statement: a query reads from before its own writes
+  assert (r->>'recycled')::int = 1 and (select state from lead_state where lead_id = t.lead('W')) = 'queued', format('season: %s', r);
+end $$;
+reset role;
+-- automatic: off, Z stays parked; at 30 days, the next lead request brings it back
+set role authenticated;
+do $$ begin perform t.next('B'); end $$;
+reset role;
+do $$ begin
+  assert (select state from lead_state where lead_id = t.lead('Z')) = 'provider_list', 'nothing comes back on its own by default';
+end $$;
+update app_settings set value = '30' where key = 'recycle_provider_days';
+set role authenticated;
+do $$ begin perform t.next('B'); end $$;
+reset role;
+do $$ begin
+  assert (select state from lead_state where lead_id = t.lead('Z')) = 'queued', 'switched on, the 40-day-old provider lead comes back';
+  assert exists (select 1 from lead_intents where lead_id = t.lead('Z') and intent_key = 'provider_winback');
+end $$;
+update app_settings set value = '0' where key = 'recycle_provider_days';
+
+\echo '29 · Best time: learned by trade and the lead''s hour, pulled toward the average until the data is there; an optional lean in the pool'
+select t.reset() \g /dev/null
+update app_settings set value = '{"days": 90, "min_dials": 30, "min_total": 100, "prior": 20, "use_in_queue": false}' where key = 'best_time';
+update leads set category_key = 'roofing' where name in ('X', 'Y');
+update leads set category_key = 'plumbing' where name in ('Z', 'W');
+-- roofers pick up at 8am their time (20 of 40), rarely at 2pm (4 of 40); plumbers the same at both (8 of 40)
+insert into attempts (lead_id, agent_id, clicked_at, connected, disposition)
+select t.lead(b.lead), t.uid('A'), ((business_date() - 1) + b.at) at time zone 'America/New_York', i <= b.hits,
+       case when i <= b.hits then 'not_interested_soft' else 'no_answer' end
+  from (values ('X', time '08:30', 20), ('X', time '14:30', 4), ('Z', time '08:30', 8), ('Z', time '14:30', 8)) b(lead, at, hits),
+       generate_series(1, 40) i;
+do $$
+declare st jsonb;
+begin
+  st := public.best_time_refresh();
+  assert (st->>'total')::int = 160 and (st->>'rate')::numeric = 0.25, format('state: %s', st);
+  assert (select lift > 1.4 and reliable from best_time_cells where trade = 'roofing' and hour = 8), 'roofers: 8am is well above their day';
+  assert (select lift < 0.6 and reliable from best_time_cells where trade = 'roofing' and hour = 14), 'and 2pm well below';
+  assert (select lift between 0.8 and 1.2 from best_time_cells where trade = 'plumbing' and hour = 8)
+     and (select lift between 0.8 and 1.2 from best_time_cells where trade = 'plumbing' and hour = 14),
+    'a flat trade stays near its average (only the floor-wide hour effect leans in)';
+  assert (select rate < 20.0 / 40 from best_time_cells where trade = 'roofing' and hour = 8), 'estimates are pulled toward the average, not taken raw';
+end $$;
+set role authenticated;
+do $$
+declare b jsonb;
+begin
+  perform t.as_user('A');
+  b := public.best_times();
+  assert (b->>'ready')::boolean and not (b->>'use_in_queue')::boolean, format('ready, not in the queue: %s', b->'state');
+  assert (select (x->'cells'->0->>'hour')::int from jsonb_array_elements(b->'trades') x where x->>'trade' = 'roofing') = 8, 'roofing''s best hour first';
+end $$;
+reset role;
+-- too little data: nothing is reliable
+update app_settings set value = jsonb_set(value, '{min_total}', '1000') where key = 'best_time';
+do $$ begin
+  perform public.best_time_refresh();
+  assert not exists (select 1 from best_time_cells where reliable), 'under min_total nothing counts';
+end $$;
+set role authenticated;
+do $$ begin perform t.as_user('A'); assert not (public.best_times()->>'ready')::boolean; end $$;
+reset role;
+-- the queue lean: at this hour of their day plumbers pick up, roofers don't
+delete from best_time_cells;
+insert into best_time_cells (trade, hour, dials, connects, rate, lift, reliable) values
+  ('plumbing', extract(hour from now() at time zone 'America/New_York')::int, 100, 40, 0.4, 1.6, true),
+  ('roofing', extract(hour from now() at time zone 'America/New_York')::int, 100, 10, 0.1, 0.5, true);
+set role authenticated;
+do $$ begin assert t.name(t.next('A')) = 'X', 'switched off, the pool keeps its order (X scores 95)'; end $$;
+reset role;
+update lead_state set reserved_by = null, reserved_until = null;
+update app_settings set value = jsonb_set(value, '{use_in_queue}', 'true') where key = 'best_time';
+set role authenticated;
+do $$ begin
+  assert t.name(t.next('A')) = 'Z', 'switched on: Z (85 × 1.3) edges out X (95 × 0.7); the lean is held to 0.7–1.3';
+end $$;
+reset role;
+update app_settings set value = '{"days": 90, "min_dials": 30, "min_total": 1000, "prior": 20, "use_in_queue": false}' where key = 'best_time';
+update lead_state set reserved_by = null, reserved_until = null;
+
+\echo '30 · Leaderboard: dials and conversations only; streaks at the daily target; a power hour with a first-to-N winner; one vote a day for someone else''s call'
+select t.reset() \g /dev/null
+update kpi_targets set target = 2 where metric = 'dials_per_day';
+update app_settings set value = '{"start":"00:00","end":"23:59:59","days":[1,2,3,4,5,6,7]}' where key = 'business_hours';
+-- A dialed 2 on each of the last two days; B once yesterday (short of the target)
+insert into attempts (lead_id, agent_id, clicked_at, disposition)
+select t.lead('D1'), t.uid(v.w), (business_date() - v.d)::timestamp at time zone business_tz() + interval '10 hours', 'no_answer'
+  from (values ('A', 1), ('A', 1), ('A', 2), ('A', 2), ('B', 1)) v(w, d);
+set role authenticated;
+do $$
+declare s jsonb; lb jsonb; a1 bigint; a2 bigint; b1 bigint; b2 bigint;
+begin
+  perform t.as_user('A');
+  perform t.fails('select public.start_sprint(''x'', ''conversations'', 30)', 'manager only');
+  perform t.as_user('M');
+  perform t.fails('select public.start_sprint(''x'', ''talk'', 30)', 'dials or conversations');
+  perform t.fails('select public.start_sprint(''x'', ''dials'', 1)', '5 to 240 minutes');
+  s := public.start_sprint('', 'conversations', 60, 2);
+  assert s->>'name' = 'Power hour', 'a sprint without a name is a power hour';
+
+  -- A: a conversation and a no-answer; B: two conversations
+  a1 := t.dial('A', 'X'); perform t.log('A', a1, 'callback', jsonb_build_object('due_at', now() + interval '1 day'));
+  b1 := t.dial('B', 'Z'); perform t.log('B', b1, 'not_interested_soft');
+  a2 := t.dial('A', 'Y'); perform t.log('A', a2, 'no_answer');
+  b2 := t.dial('B', 'W'); perform t.log('B', b2, 'email_requested', '{"email": "w@test"}');
+
+  s := public.sprint_board();
+  assert (s->>'running')::boolean and s->'winner'->>'agent_id' = t.uid('B')::text, format('B is first to 2 conversations: %s', s);
+  assert (s->'rows'->0->>'count')::int = 2 and (s->'rows'->1->>'count')::int = 1, format('standings: %s', s->'rows');
+
+  lb := public.leaderboard('today');
+  assert lb->'rows'->0->>'agent_id' = t.uid('B')::text, 'most conversations first';
+  assert (select (r->>'streak')::int from jsonb_array_elements(lb->'rows') r where r->>'agent_id' = t.uid('A')::text) = 3,
+    format('A: two days at target, and today: %s', lb->'rows');
+  assert (select (r->>'streak')::int from jsonb_array_elements(lb->'rows') r where r->>'agent_id' = t.uid('B')::text) = 1,
+    'B: short yesterday, at target today';
+  assert (select (r->>'dials')::int from jsonb_array_elements(public.leaderboard('week')->'rows') r where r->>'agent_id' = t.uid('A')::text) >= 2,
+    'the week adds up too';
+
+  -- call of the day
+  perform t.as_user('A');
+  perform t.fails(format('select public.vote_call(%s)', a1), 'someone else');
+  perform t.fails(format('select public.vote_call(%s)', a2), 'conversation from today');
+  assert (public.vote_call(b2)->>'votes')::int = 1;
+  assert (public.vote_call(b1)->>'votes')::int = 1;
+  assert (select count(*) from call_votes) = 1, 'a second vote moves the first';
+  perform t.as_user('M');
+  perform public.vote_call(b1);
+  lb := public.leaderboard('today');
+  assert (lb->'call_of_the_day'->>'attempt_id')::bigint = b1 and (lb->'call_of_the_day'->>'votes')::int = 2, format('call of the day: %s', lb->'call_of_the_day');
+  assert (lb->'votes'->>(b1::text))::int = 2 and (lb->>'my_vote')::bigint = b1;
+  assert jsonb_typeof(public.vote_call(null)->'voted') = 'null';
+  assert (public.leaderboard('today')->'votes'->>(b1::text))::int = 1, 'a vote can be taken back';
+end $$;
+-- a later transaction: the calls above were made before this race
+do $$
+declare s jsonb;
+begin
+  perform t.as_user('M');
+  -- one race at a time; ending it early settles it
+  s := public.start_sprint('Dial sprint', 'dials', 30);
+  assert (select count(*) from sprints where ends_at > now()) = 1, 'a new race ends the one running';
+  perform public.end_sprint();
+  s := public.sprint_board();
+  assert not (s->>'running')::boolean and s->>'name' = 'Dial sprint' and jsonb_typeof(s->'winner') = 'null', format('ended, no dials in it: %s', s);
+  assert public.floor_pulse() ? 'sprint' and public.floor_pulse() ? 'wins';
+end $$;
+reset role;
+update kpi_targets set target = 400 where metric = 'dials_per_day';
+
+\echo '31 · Scorecards: the week against the floor over four weeks, with the handoffs and the long conversations that still ended in a no'
+select t.reset() \g /dev/null
+-- this week: A 10 dials (4 conversations: a 5-minute no, a handoff, two callbacks); B 20 dials, 2 conversations
+insert into attempts (lead_id, agent_id, clicked_at, connected, disposition, call_result, duration_seconds, matched)
+select t.lead('X'), t.uid('A'), now(), i <= 4,
+       case i when 1 then 'not_interested_hard' when 2 then 'chance_website' when 3 then 'callback' when 4 then 'callback' else 'no_answer' end,
+       case when i <= 4 then 'answered' end, case when i = 1 then 300 when i <= 4 then 90 else 0 end, true
+  from generate_series(1, 10) i;
+insert into attempts (lead_id, agent_id, clicked_at, connected, disposition)
+select t.lead('Y'), t.uid('B'), now(), i <= 2, case when i <= 2 then 'callback' else 'no_answer' end from generate_series(1, 20) i;
+-- last week: A 6 dials
+insert into attempts (lead_id, agent_id, clicked_at, disposition)
+select t.lead('Z'), t.uid('A'), now() - interval '7 days', 'no_answer' from generate_series(1, 6);
+insert into handoff_ledger (lead_id, lead_snapshot, kind, summary, rating, agent_id)
+  values (t.lead('X'), '{"name": "X"}', 'chance_website', 'build the homepage', 5, t.uid('A'));
+set role authenticated;
+do $$
+declare sc jsonb; w jsonb;
+begin
+  perform t.as_user('A');
+  sc := public.scorecard(t.uid('A'));
+  assert jsonb_array_length(sc->'weeks') = 4, 'four weeks';
+  w := sc->'weeks'->3;
+  assert (w->'me'->>'dials')::int = 10 and (w->'me'->>'conversations')::int = 4 and (w->'me'->>'won')::int = 1
+     and (w->'me'->>'kept')::int = 3, format('this week: %s', w->'me');
+  assert (w->'floor'->>'agents')::int = 2 and (w->'floor'->>'dials')::int = 30 and (w->'floor'->>'conversations')::int = 6,
+    format('the floor: %s', w->'floor');
+  assert (sc->'weeks'->2->'me'->>'dials')::int = 6, 'last week';
+  assert jsonb_array_length(sc->'handoffs') = 1 and sc->'handoffs'->0->>'summary' = 'build the homepage';
+  assert jsonb_array_length(sc->'review') = 1 and (sc->'review'->0->>'duration')::int = 300,
+    format('the 5-minute no is worth talking through: %s', sc->'review');
+  assert jsonb_array_length(sc->'saved') = 0, 'agents don''t see the library';
+  perform t.as_user('B');
+  perform t.fails(format('select public.scorecard(%L)', t.uid('A')), 'their own scorecard');
+  perform t.as_user('M');
+  assert (public.scorecard(t.uid('A'))->'weeks'->3->'me'->>'dials')::int = 10, 'managers see everyone''s';
+end $$;
+reset role;
+
+\echo '32 · Referrals: a new lead (or the one on file) marked warm, at the top of the agent''s own list; do-not-call numbers refused'
+select t.reset() \g /dev/null
+set role authenticated;
+do $$
+declare att bigint; r jsonb; n jsonb; v bigint;
+begin
+  att := t.dial('A', 'X');
+  perform t.fails(format('select public.add_referral(%s, ''Mike'', ''305-555'')', att), '10-digit');
+  perform t.fails(format('select public.add_referral(%s, '' '', ''3055557777'')', att), 'who they are');
+  perform t.fails(format('select public.add_referral(%s, ''X again'', ''(305) 555-0001'')', att), 'the number you are calling');
+  perform t.as_user('B');
+  perform t.fails(format('select public.add_referral(%s, ''Mike'', ''3055557777'')', att), 'not your call');
+  perform t.as_user('A');
+  r := public.add_referral(att, 'Mike''s Gutters', '(305) 555-7777', 'Gutters', null, null, 'his cousin; mention Joe');
+  assert (r->>'created')::boolean, format('a new lead: %s', r);
+  v := (r->>'lead_id')::bigint;
+  assert (select source = 'referral' and source_id is null and addr_state = 'FL' and tz is not null and category = 'Gutters'
+            and phone_display = '(305) 555-7777' from leads where id = v), 'a dialer-only lead in the referrer''s area';
+  assert (select state from lead_state where lead_id = v) = 'queued';
+  assert exists (select 1 from lead_intents where lead_id = v and intent_key = 'warm_referral'), 'marked warm';
+  assert (select kind = 'referrals' and agent_id = t.uid('A') from lists where id = (r->>'list_id')::bigint), 'on A''s own Referrals list';
+  n := t.log('A', att, 'not_interested_soft');
+  assert t.name(n->'next') = 'Mike''s Gutters' and n->'next'->>'reason' = 'list', format('the referral is next: %s', t.name(n->'next'));
+  assert n->'next'->'referral'->>'from' = 'X' and n->'next'->'referral'->>'note' = 'his cousin; mention Joe',
+    format('the agent sees who sent us: %s', n->'next'->'referral');
+  assert n->'next'->'intents'->0->>'key' = 'warm_referral', 'the warm referral leads the intents';
+end $$;
+do $$
+declare att bigint; r jsonb;
+begin
+  -- Y rests after a no; referred to us again, it comes back rather than being duplicated
+  att := t.dial('B', 'Y'); perform t.log('B', att, 'not_interested_hard');
+  att := t.dial('B', 'Z');
+  r := public.add_referral(att, 'Y, another name', '3055550002');
+  assert not (r->>'created')::boolean and (r->>'lead_id')::bigint = t.lead('Y'), format('the number on file is linked: %s', r);
+  assert (select state from lead_state where lead_id = t.lead('Y')) = 'queued', 'a parked lead comes back for the warm call';
+  assert (select count(*) from leads where phone_norm = '3055550002') = 1, 'no second record';
+  -- do-not-call
+  perform t.log('B', att, 'dnc');
+  att := t.dial('B', 'W');
+  perform t.fails(format('select public.add_referral(%s, ''Z'', ''3055550003'')', att), 'do-not-call');
+  perform t.log('B', att, 'no_answer');
 end $$;
 reset role;
 
