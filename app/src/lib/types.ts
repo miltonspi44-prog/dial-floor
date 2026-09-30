@@ -21,6 +21,8 @@ export interface Workspace {
   }[]
   /** D6: the opener this lead gets from the running A/B test (lab switched on). */
   ab?: AbOpener
+  /** C4: on the never-answers list — the unanswered tries in their business hours, latest first. */
+  missed?: { count: number; times: string[] }
 }
 
 export interface CallTap { objection: string; counters: string[] }
@@ -78,6 +80,7 @@ export interface NextLeadResult {
   intents?: Workspace['intents']
   history?: Workspace['history']
   ab?: AbOpener
+  missed?: Workspace['missed']
   /** Set with reason 'resume': the call this agent started and never logged. */
   attempt_id?: number
   clicked_at?: string
@@ -131,6 +134,20 @@ export interface TeamMember {
   /** scheduled callbacks and active lists still assigned to them */
   callbacks: number
   lists: number
+}
+
+/** radar(): the manager's Radar tab (C3 + C4). */
+export interface RadarData {
+  date: string
+  last_run: { date: string; at: string; seasonal: number; lists: number } | null
+  per_agent: number
+  threshold: number
+  callbacks: { due_today: number; overdue: number; by_agent: { name: string; due: number }[] }
+  fresh_no_site: { category_key: string; label: string; city: string; state: string; count: number }[]
+  never_answers: { total: number; dialable: number; new_this_week: number }
+  seasons: { label: string; keys: string[]; open: boolean; opens_next_month: boolean; dialable: number; resting: number }[]
+  converting: { kind: 'intent' | 'trade'; label: string; dials: number; rate: number; floor: number; ratio: number }[]
+  lists: { list_id: number; agent: string | null; name: string; status: string; total: number; served: number }[]
 }
 
 /** Daily per-agent targets from kpi_targets (F4). */

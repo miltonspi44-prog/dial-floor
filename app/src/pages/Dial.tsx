@@ -69,7 +69,9 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   }, [applyResult])
 
   useEffect(() => {
-    loadNext()
+    // the first Dial page of the business day runs the radar (it deals the
+    // morning lists), so it goes before the first lead; later pages return at once
+    supabase.rpc('radar_daily').then(() => loadNext())
     refreshToday()
     supabase.rpc('heartbeat', { p_status: 'idle' }).then(() => {})
   }, [loadNext, refreshToday])
@@ -158,6 +160,14 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     navigator.clipboard?.writeText(text).then(() => setToastMsg('Copied'))
   }
 
+  /** "Tue, Sep 29, 9:10 AM" on the lead's clock (the C4 proof). */
+  function theirTime(iso: string, tz: string | null): string {
+    try {
+      return new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: tz ?? 'America/New_York' })
+        .format(new Date(iso))
+    } catch { return new Date(iso).toLocaleString() }
+  }
+
   function localTime(tz: string | null): string {
     try {
       return new Intl.DateTimeFormat('en-US', { timeStyle: 'short', timeZone: tz ?? 'America/New_York' }).format(new Date())
@@ -213,6 +223,13 @@ export default function Dial({ profile }: { profile: Profile | null }) {
                 ))}
               </div>
 
+              {ws?.missed && (
+                <div className="proof">
+                  No pickup on <b>{ws.missed.count} tries</b> during their business hours
+                  ({ws.missed.times.map((t) => theirTime(t, lead.tz)).join('; ')}; their time).
+                  <div className="muted small">Open with it: “I’ve tried you {ws.missed.count} times during work hours. Your customers get the same.”</div>
+                </div>
+              )}
               {ws?.ab && (
                 <div className="opener">
                   <div className="kpilabel">Opener to use · A/B test “{ws.ab.test}”, version {ws.ab.variant}</div>

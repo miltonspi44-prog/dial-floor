@@ -7,6 +7,7 @@ interface ListRow {
   name: string
   list_date: string
   status: string
+  kind: 'manual' | 'radar'
   agent_id: string | null
   profiles: { name: string } | null
   total?: number
@@ -14,7 +15,7 @@ interface ListRow {
 }
 
 const STATES = ['', 'FL','GA','NC','SC','TN','VA','PA','OH','NY','NJ','MA','MD','CT','AL','KY','NH','ME','RI','DE','TX','WI','IL','IN','MI','AZ','CA','WA']
-const INTENTS = ['', 'no_website','social_only','free_subdomain','cheap_builder','broken_site','fresh_listing','review_rich','owner_mobile','never_answers']
+const INTENTS = ['', 'no_website','social_only','free_subdomain','cheap_builder','broken_site','fresh_listing','review_rich','owner_mobile','never_answers','seasonal_window']
 
 export default function Lists() {
   const [agents, setAgents] = useState<Profile[]>([])
@@ -26,7 +27,7 @@ export default function Lists() {
   const refresh = useCallback(async () => {
     const { data: ls } = await supabase
       .from('lists')
-      .select('id, name, list_date, status, agent_id, profiles!lists_agent_id_fkey(name)')
+      .select('id, name, list_date, status, kind, agent_id, profiles!lists_agent_id_fkey(name)')
       .neq('status', 'archived')
       .order('created_at', { ascending: false })
       .limit(30)
@@ -108,7 +109,7 @@ export default function Lists() {
           <tbody>
             {lists.map((l) => (
               <tr key={l.id}>
-                <td>{l.name}</td>
+                <td>{l.name}{l.kind === 'radar' && <span className="tag" style={{ marginLeft: 8 }}>radar</span>}</td>
                 <td>{l.list_date}</td>
                 <td>{l.profiles?.name ?? '—'}</td>
                 <td>{l.served}/{l.total}</td>

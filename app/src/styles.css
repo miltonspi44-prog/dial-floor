@@ -337,6 +337,17 @@ table.data tr.composerrow > td { background: var(--paper); padding: 12px 14px; }
 .libitem { display: flex; flex-direction: column; gap: 6px; }
 .libbody { white-space: pre-wrap; font-size: 13.5px; line-height: 1.5; }
 
+/* ---------- radar ---------- */
+.radargrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+.radarcard { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.radarcard .kpisub { line-height: 1.45; }
+.radarlist { list-style: none; margin: 2px 0 0; padding: 0; width: 100%; font-size: 13.5px; }
+.radarlist li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); }
+.radarlist li:first-child { border-top: 0; }
+.radarlist .btn { white-space: nowrap; }
+.proof { margin-top: 10px; padding: 9px 12px; border-left: 3px solid var(--warn); background: var(--warn-bg); border-radius: 0 7px 7px 0; font-size: 14px; }
+.proof .muted { margin-top: 2px; }
+
 /* ---------- tables ---------- */
 table.data { border-collapse: collapse; width: 100%; font-size: 13.5px; }
 table.data th {

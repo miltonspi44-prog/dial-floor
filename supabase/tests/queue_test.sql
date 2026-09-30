@@ -272,6 +272,9 @@ begin
   perform t.fails('select public.ab_results(1)', 'permission denied');
   perform t.fails('select public.ab_set_status(1, ''running'')', 'permission denied');
   assert (select count(*) from public.library_items) = 0, 'anon sees no library';
+  perform t.fails('select public.radar()', 'permission denied');
+  perform t.fails('select public.radar_daily()', 'permission denied');
+  perform t.fails('select public.radar_deal_now()', 'permission denied');
   perform t.fails('select public.set_member(t.uid(''A''), p_active => false)', 'permission denied');
 end $$;
 reset role;
@@ -637,5 +640,113 @@ begin
 end $$;
 reset role;
 delete from ab_tests;
+
+\echo '23 · Radar: no pickup in business hours flags the AI-receptionist list; each business day every agent is dealt the best leads, once'
+select t.reset() \g /dev/null
+-- every hour of every day is business hours here, and 3 tries make the list
+update app_settings set value = '{"start":"00:00","end":"23:59:59","days":[1,2,3,4,5,6,7]}' where key = 'business_hours';
+update app_settings set value = '3' where key = 'missed_call_threshold';
+set role authenticated;
+do $$
+declare att bigint;
+begin
+  -- X: rings out twice, then voicemail: flagged
+  for i in 1..3 loop
+    att := t.dial('A', 'X');
+    perform t.log('A', att, case when i < 3 then 'no_answer' else 'voicemail' end,
+                  case when i < 3 then '{}'::jsonb else '{"left_message": false}'::jsonb end);
+  end loop;
+  assert exists (select 1 from lead_intents where lead_id = t.lead('X') and intent_key = 'never_answers'),
+    'three tries in business hours with no pickup: on the AI-receptionist list';
+  -- Y: only two tries so far
+  for i in 1..2 loop att := t.dial('A', 'Y'); perform t.log('A', att, 'no_answer'); end loop;
+  assert not exists (select 1 from lead_intents where lead_id = t.lead('Y') and intent_key = 'never_answers'), 'two tries are not enough';
+  -- Z: someone picked up once (a gatekeeper), so it doesn't "never answer"
+  att := t.dial('A', 'Z'); perform t.log('A', att, 'gatekeeper_end');
+  for i in 1..3 loop att := t.dial('A', 'Z'); perform t.log('A', att, 'no_answer'); end loop;
+  assert not exists (select 1 from lead_intents where lead_id = t.lead('Z') and intent_key = 'never_answers'), 'a lead that once answered is not flagged';
+end $$;
+reset role;
+-- tries outside business hours don't count
+update app_settings set value = '{"start":"00:00","end":"23:59:59","days":[]}' where key = 'business_hours';
+update lead_state set reserved_by = null, reserved_until = null;  -- A's logged calls hold A's next lead
+set role authenticated;
+do $$
+declare att bigint;
+begin
+  for i in 1..3 loop att := t.dial('B', 'W'); perform t.log('B', att, 'no_answer'); end loop;
+  assert not exists (select 1 from lead_intents where lead_id = t.lead('W') and intent_key = 'never_answers'),
+    'tries outside their business hours prove nothing';
+end $$;
+reset role;
+update app_settings set value = '{"start":"00:00","end":"23:59:59","days":[1,2,3,4,5,6,7]}' where key = 'business_hours';
+do $$
+declare w jsonb;
+begin
+  w := public.build_workspace(t.lead('X'), 'peek');
+  assert (w->'missed'->>'count')::int = 3 and jsonb_array_length(w->'missed'->'times') = 3,
+    format('the agent sees the tries as proof: %s', w->'missed');
+  assert not (public.build_workspace(t.lead('Y'), 'peek') ? 'missed'), 'no proof line for a lead not on the list';
+end $$;
+
+-- C3: two leads in season, two agents, two leads each
+update app_settings set value = '2' where key = 'radar_deal_per_agent';
+update app_settings set value = '[{"label":"Test season","keys":["siding"],"months":[1,2,3,4,5,6,7,8,9,10,11,12]}]' where key = 'seasons';
+update leads set category_key = 'roofing,siding', addr_city = 'Tampa', website_type = 'none', first_seen = now() - interval '2 days'
+ where name in ('Y', 'Z');
+-- the next morning: nothing is cooling down or held yet
+update lead_state set reserved_by = null, reserved_until = null, last_attempt_at = now() - interval '1 day', attempts_today = 0;
+delete from app_settings where key = 'radar_last_run';
+update profiles set active = false where id = 'dddddddd-0000-0000-0000-00000000000d';  -- group 13's signup: off the floor, so not dealt
+set role authenticated;
+do $$
+declare r jsonb; la bigint; lb bigint; n jsonb;
+begin
+  perform t.as_user('A');
+  r := public.radar_daily();
+  assert (r->>'ran')::boolean and (r->>'lists')::int = 2, format('the first page of the day deals each active agent a list: %s', r);
+  assert not (public.radar_daily()->>'ran')::boolean, 'and only once a day';
+  la := (select id from lists where kind = 'radar' and agent_id = t.uid('A'));
+  lb := (select id from lists where kind = 'radar' and agent_id = t.uid('B'));
+  assert (select count(*) from list_items where list_id = la) = 2 and (select count(*) from list_items where list_id = lb) = 2, 'two leads each';
+  assert not exists (select 1 from list_items a join list_items b on b.lead_id = a.lead_id where a.list_id = la and b.list_id = lb),
+    'no lead is dealt twice';
+  assert not exists (select 1 from lists where kind = 'radar' and agent_id = t.uid('M')), 'managers are not dealt a list';
+  assert not exists (select 1 from lists where kind = 'radar' and agent_id = 'dddddddd-0000-0000-0000-00000000000d'), 'nor is an agent off the floor';
+  assert (select count(*) from lead_intents where intent_key = 'seasonal_window' and source = 'radar') = 2, 'in-season trades are tagged';
+  n := t.next('A');
+  assert n->>'reason' = 'list', format('A is served from their radar list: %s', n->>'reason');
+  perform t.fails('select public.radar_deal_now()', 'manager only');
+  perform t.fails('select public.radar()', 'manager only');
+
+  perform t.as_user('M');
+  r := public.radar();
+  assert (r->'never_answers'->>'total')::int = 1 and (r->'never_answers'->>'new_this_week')::int = 1, format('never answers: %s', r->'never_answers');
+  assert jsonb_array_length(r->'lists') = 2, 'today''s radar lists are on the card';
+  assert (select count(*) from jsonb_array_elements(r->'seasons') x where (x->>'open')::boolean) = 1, 'the season shows open';
+  assert jsonb_array_length(r->'fresh_no_site') = 0, 'two fresh no-site roofers are not a cluster yet (3 needed)';
+  assert (public.radar_deal_now()->'dealt') = '[]'::jsonb, 'dealing again mid-day leaves agents with a list alone';
+end $$;
+reset role;
+-- the next business day: yesterday's radar lists close and fresh ones are dealt
+update lists set list_date = list_date - 1 where kind = 'radar';
+update app_settings set value = jsonb_set(value, '{date}', to_jsonb((business_date() - 1)::text)) where key = 'radar_last_run';
+set role authenticated;
+do $$
+begin
+  perform t.as_user('B');
+  assert (public.radar_daily()->>'ran')::boolean, 'a new day, a new deal';
+  assert (select count(*) from lists where kind = 'radar' and status = 'done') = 2, 'yesterday''s radar lists are closed';
+  assert (select count(*) from lists where kind = 'radar' and status = 'active' and list_date = business_date()) = 2, 'today''s are dealt';
+
+  -- the lists the radar cards build: trade, city, website, freshness
+  perform t.as_user('M');
+  update lists set status = 'done' where kind = 'radar';
+  assert (public.build_list('Tampa roofers', null, '{"category":"plumbing,roofing","city":"tampa","website_type":"none","fresh_days":7}', 10)->>'count')::int = 2,
+    'trade (any of), city, website and freshness rules';
+  update lists set status = 'done';
+  assert (public.build_list('Plumbers', null, '{"category":"plumbing"}', 10)->>'count')::int = 0, 'no plumbers here';
+end $$;
+reset role;
 
 \echo 'all queue tests passed'
