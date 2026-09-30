@@ -38,16 +38,21 @@ function corsHeaders(req: Request): Record<string, string> {
   };
 }
 
-/** 12 random characters with no look-alikes (0/O, 1/l/I), shown as xxxx-xxxx-xxxx. */
+/** 12 random characters with no look-alikes (0/O, 1/l/I), shown as xxxx-xxxx-xxxx.
+ *  Always a lower, an upper and a digit (the dashes add a symbol), so it passes
+ *  any password rule the project's Auth settings may require. */
 function newPassword(): string {
   const abc = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 56
-  const out: string[] = [];
-  while (out.length < 12) {
-    for (const b of crypto.getRandomValues(new Uint8Array(16))) {
-      if (b < 224 && out.length < 12) out.push(abc[b % 56]); // 224 = 4 × 56: no modulo bias
+  for (;;) {
+    const out: string[] = [];
+    while (out.length < 12) {
+      for (const b of crypto.getRandomValues(new Uint8Array(16))) {
+        if (b < 224 && out.length < 12) out.push(abc[b % 56]); // 224 = 4 × 56: no modulo bias
+      }
     }
+    const p = out.join("");
+    if (/[a-z]/.test(p) && /[A-Z]/.test(p) && /[2-9]/.test(p)) return `${p.slice(0, 4)}-${p.slice(4, 8)}-${p.slice(8)}`;
   }
-  return `${out.slice(0, 4).join("")}-${out.slice(4, 8).join("")}-${out.slice(8).join("")}`;
 }
 
 /** Auth's messages, in the app's words where they are cryptic. */
