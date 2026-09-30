@@ -15,7 +15,7 @@ them) · the scraper project is never modified.
 
 | Folder | What it is |
 |---|---|
-| `app/` | The web portal (Vite + React + Supabase). Agents: Dial + Floor. Manager: + Funnel, Lists, Handoffs, Emails, Team. |
+| `app/` | The web portal (Vite + React + Supabase). Agents: Dial, Floor, Coaching. Manager: + Radar, Funnel, Lists, Handoffs, Playbook, Emails, Team. |
 | `supabase/migrations/` | The database schema, queue engine and seeds (already applied to project `dial-floor`, id `fevjrcxmktjwbaozbngo`). |
 | `supabase/functions/zoom-webhook/` | Edge function receiving Zoom `phone.*` webhooks (already deployed). |
 | `supabase/tests/` | Queue-engine tests: `supabase/tests/run.sh` applies every migration to a throwaway local Postgres and checks the dialing rules. |
@@ -95,6 +95,40 @@ project's public URL and publishable key.
   call already open can still be logged). Their scheduled callbacks and assigned
   lists stay theirs, and the Team tab shows them until you push the callbacks
   back (Floor) or reassign the lists (Lists).
+- **Radar** (managers): the first Dial or Radar page of each business day
+  ranks the pool and deals every active agent their best leads as a "Radar"
+  list (`radar_deal_per_agent`, 0 turns it off). Yesterday's radar lists close,
+  so unworked leads get re-ranked. The cards:
+  - callbacks due today;
+  - leads that never answer: 4+ unanswered tries during their own business
+    hours. That's the AI-receptionist list, and agents see the tries as their
+    opener: "I've tried you N times during work hours. Your customers get the
+    same.";
+  - new no-website clusters (3+ in one trade and city this week);
+  - open and upcoming seasons (from the lead-scraping plan, section 7; edit
+    `seasons`);
+  - what is connecting above average.
+
+  Each card can build a shared list, which you assign on the Lists tab.
+- **Coaching**: every agent sees their own digest for today or the week, against
+  the floor and the targets. It shows two things going well, one thing to work
+  on with a concrete move, their best hour, and a counter to try for each
+  objection they hear. Managers pick any agent and also get **floor insights**:
+  - how often each objection comes up and how those calls end;
+  - where calls end by talk time;
+  - how conversations end;
+  - the words in notes of calls kept alive vs lost.
+
+  Gatekeeper calls are left out.
+- **Playbook** (managers):
+  - **Battlecards**: edit the objections and counters agents tap on a call.
+    Counters with 5+ uses are ranked on the Dial page by the calls they kept
+    alive (a callback, an email or a handoff).
+  - **A/B lab**: opener tests, one at a time, behind a switch that is off by
+    default. Each lead always gets the same opener, the dial records which one,
+    and results say "could still be chance" until there's enough data.
+  - **Library**: managers only; talk tracks plus calls saved from the Floor's
+    recent calls or the Handoffs ledger.
 - The sync loop (`cd sync && npm run loop`) keeps leads flowing in and statuses
   flowing back. Run it on any always-on PC (Task Scheduler recipe in the
   console's own DEPLOY.md works the same here).
@@ -118,4 +152,9 @@ Stored in `app_settings`; change them in the Supabase SQL editor, e.g.
 | `allow_general_pool` | `true` | Serve the general pool once lists and callbacks are empty |
 | `business_tz` | `"America/Los_Angeles"` | Timezone of the business day behind "today" counts and daily caps |
 | `spam_alert_drop_pts` | `10` | A number whose connect rate drops this many points week over week is flagged on the floor board |
+| `missed_call_threshold` | `4` | Unanswered tries during a lead's business hours that put it on the never-answers (AI-receptionist) list |
+| `business_hours` | `{"start":"08:00","end":"17:00","days":[1,2,3,4,5]}` | A lead's business hours on its own clock (days 1 = Monday … 7 = Sunday), for the never-answers count |
+| `radar_deal_per_agent` | `100` | Leads each active agent is dealt every morning as their Radar list; `0` turns the morning lists off (also on the Radar tab) |
+| `seasons` | trades and months from the lead-scraping plan §7 | Seasonal windows: `[{"label","keys":[category keys],"months":[1-12],"states":[optional]}]`; in-season leads get the "Seasonal window open" intent |
+| `ab_lab_enabled` | `false` | The A/B lab's switch (also on the Playbook tab): off, agents see no test openers |
 | `ai_summaries_enabled` | `false` | Leave off: this Zoom plan has no AI Companion call summaries, so calls are logged metadata-only (outcome, talk time, the agent's note). Turn on only if summaries are added (docs/ZOOM-SETUP.md §4) |
