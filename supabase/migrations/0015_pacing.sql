@@ -13,9 +13,6 @@ insert into public.app_settings (key, value) values
   ('shift_hours', '8')
 on conflict (key) do nothing;
 
--- today's floor reads attempts by time; the per-agent index doesn't cover that
-create index if not exists attempts_clicked_idx on public.attempts (clicked_at desc);
-
 -- -------------------------------------------------------------- agent_breaks --
 create table public.agent_breaks (
   id bigint generated always as identity primary key,
