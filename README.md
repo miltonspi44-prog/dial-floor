@@ -62,8 +62,9 @@ project's public URL and publishable key.
   pool ordered by score. A list assigned to an agent is theirs alone; an
   unassigned list is shared by everyone.
 - Agents: **D** dials · **S** skips (the lead sits out an hour) · non-connects
-  are one key (**N/V/B/X**) · **C** opens the outcome popup · everything
-  advances automatically. Mouse works everywhere too.
+  are one key (**N/V/B/X**) · **C** opens the outcome popup (**R** there saves
+  a referral) · **P** pauses · everything advances automatically. Mouse works
+  everywhere too.
 - A loaded lead is reserved for that agent, so two agents never call the same
   business. Reloading the page mid-call brings the open call back to log.
 - Callbacks are entered on the lead's own clock. Unanswered, they come back an
@@ -76,6 +77,39 @@ project's public URL and publishable key.
 - The floor board shows each agent's day against the daily targets, and a tab
   that has gone quiet for 5 minutes as offline. Managers set the targets at the
   bottom of the **Funnel** tab.
+- **Pacing** (Dial page): the strip shows today's dials, connects and handoffs
+  against the targets, and pace: dials and talk minutes per active hour against
+  the dial target spread over the shift (400 over 8 hours = 50 an hour). After
+  each logged call a wrap-up countdown runs (20 s by default) before the next
+  dial. It only paces: the dial is always the agent's own key press. **P**
+  pauses with a reason (break, lunch, meeting, training, tech trouble, or other
+  with a note): the lead on screen goes back to the queue, the floor board shows
+  the reason, and pace leaves the time out. A pause survives a reload; Enter
+  ends it. Managers set the shift length and the wrap-up next to the daily
+  targets on the Funnel tab.
+- **Referrals**: in the outcome popup, **R** saves "talk to my buddy who does
+  gutters" (who, phone, trade, city and state, what they said). It becomes a
+  lead marked **Warm referral**, first on the agent's own Referrals list, and
+  the Dial page shows who sent us with an opener. When the number is already on
+  file, that lead is linked instead (and comes back if it was parked). The agent
+  still logs how the call ended. Do-not-call and handed-off numbers are refused.
+  Referral leads live in the dialer only: they have no console id, so the sync
+  leaves them alone.
+- **Alerts** (Floor tab, managers): someone idle with a lead up, one call running
+  long (or an outcome never logged), behind pace after their first hour, a
+  callback overdue, a caller number whose connect rate collapsed. A chance given
+  or a sale closed rings the bell for everyone (a banner on the Floor, a toast
+  on the Dial page). Thresholds and switches are under **Alert settings** at the
+  bottom of the Floor tab. **Notify me on this device** turns alerts into system
+  notifications while the Floor tab is open (desktop browsers; on a phone, keep
+  the Floor tab open in Chrome, or on an iPhone add the site to the home
+  screen). **Bell on** plays a chime for wins.
+- **Leaderboard** (Floor tab): today or this week, dials and conversations only
+  (no outcome points to chase), with each agent's streak of working days at the
+  dial target. Managers start a **power hour**: a race on dials or conversations
+  for N minutes, optionally first to N; everyone sees it on the Floor and the
+  Dial page. **Call of the day**: everyone has one vote a day for someone else's
+  conversation, in Recent calls.
 - The **Funnel** tab (managers) reads today, the last 7 or the last 30 days:
   dials → picked up → conversations → handoffs, then the same split by agent
   (per day, against the targets), by where the dial came from (callback, which
@@ -121,6 +155,22 @@ project's public URL and publishable key.
   - what is connecting above average.
 
   Each card can build a shared list, which you assign on the Lists tab.
+
+  **Recycle** (bottom of the Radar tab): leads the queue has parked come back
+  when you say so: "already has a provider" leads (parked for good until now),
+  resting leads after a no (before the rest ends), and resting leads whose
+  season is open. Pick the pool and how long ago they were parked, see how many
+  and who, and recycle them, as a shared list if you want them served before the
+  pool. Provider leads come back tagged **Provider win-back**. Bringing them back
+  automatically after N days is an option, off by default. Do-not-call and
+  handed-off leads never come back.
+- **Best time to call** (Funnel tab): the pickup rate by trade and by the lead's
+  own hour, learned from the call log. Thin data is pulled toward the trade's
+  all-day rate until an hour has 30+ dials, and nothing shows until the floor
+  has 1,000 logged dials. Then the Dial page shows the lead's trade's best
+  hours, and **Use it in the queue** (off by default) leans the general pool
+  toward trades in a good hour: score × 0.7–1.3, one factor among several.
+  Lists and callbacks keep their own order.
 - **Coaching**: every agent sees their own digest for today or the week, against
   the floor and the targets. It shows two things going well, one thing to work
   on with a concrete move, their best hour, and a counter to try for each
@@ -131,6 +181,12 @@ project's public URL and publishable key.
   - the words in notes of calls kept alive vs lost.
 
   Gatekeeper calls are left out.
+
+  **Weekly scorecard** (the third period on the Coaching tab): four business
+  weeks of an agent's funnel next to the floor's average agent, with a trend
+  line, this week's handoffs, the longest conversations that still ended in a
+  no, and (for managers) calls saved to the library. **Print** makes a copy for
+  the weekly review.
 - **Playbook** (managers):
   - **Battlecards**: edit the objections and counters agents tap on a call.
     Counters with 5+ uses are ranked on the Dial page by the calls they kept
@@ -167,5 +223,10 @@ Stored in `app_settings`; change them in the Supabase SQL editor, e.g.
 | `business_hours` | `{"start":"08:00","end":"17:00","days":[1,2,3,4,5]}` | A lead's business hours on its own clock (days 1 = Monday … 7 = Sunday), for the never-answers count |
 | `radar_deal_per_agent` | `100` | Leads each active agent is dealt every morning as their Radar list; `0` turns the morning lists off (also on the Radar tab) |
 | `seasons` | trades and months from the lead-scraping plan §7 | Seasonal windows: `[{"label","keys":[category keys],"months":[1-12],"states":[optional]}]`; in-season leads get the "Seasonal window open" intent |
+| `wrapup_seconds` | `20` | Wrap-up countdown after each logged call, `0` = off; it never dials by itself (also on the Funnel tab) |
+| `shift_hours` | `8` | The shift the daily dial target is spread over for pace (also on the Funnel tab) |
+| `alerts` | `{"idle_minutes":10,"long_call_minutes":15,"pace_pct":80,"callback_overdue_minutes":15,"celebrate":true,"spam":true}` | Floor alerts; `0` or `false` turns one off (also on the Floor tab) |
+| `recycle_provider_days` | `0` | Bring "has a provider" leads back on their own after this many days; `0` = only when a manager recycles them (also on the Radar tab) |
+| `best_time` | `{"days":90,"min_dials":30,"min_total":1000,"prior":20,"use_in_queue":false}` | The best-time model: its window, the dials an hour needs, the dials the floor needs, how hard thin data leans on the average, and the queue switch (also on the Funnel tab) |
 | `ab_lab_enabled` | `false` | The A/B lab's switch (also on the Playbook tab): off, agents see no test openers |
 | `ai_summaries_enabled` | `false` | Leave off: this Zoom plan has no AI Companion call summaries, so calls are logged metadata-only (outcome, talk time, the agent's note). Turn on only if summaries are added (docs/ZOOM-SETUP.md §4) |
