@@ -355,6 +355,12 @@ table.data tr.composerrow > td { background: var(--paper); padding: 12px 14px; }
 .digestline.good { border-left-color: var(--ok); }
 .digestline.fix { border-left-color: var(--warn); }
 
+/* ---------- users ---------- */
+.credcard { border-color: var(--ok); display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-width: 560px; }
+.credcard .mono { font-family: Consolas, monospace; font-size: 15px; letter-spacing: 0.03em; }
+.panelbody { display: flex; flex-direction: column; gap: 10px; }
+label.radio { flex-direction: row !important; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 400; color: var(--ink); }
+
 /* ---------- tables ---------- */
 table.data { border-collapse: collapse; width: 100%; font-size: 13.5px; }
 table.data th {

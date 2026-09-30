@@ -10,7 +10,7 @@ import Lists from './pages/Lists'
 import Ledger from './pages/Ledger'
 import Emails from './pages/Emails'
 import Funnel from './pages/Funnel'
-import Team from './pages/Team'
+import Users from './pages/Users'
 import Playbook from './pages/Playbook'
 import Radar from './pages/Radar'
 import Coaching from './pages/Coaching'
@@ -57,7 +57,7 @@ export default function App() {
   if (!ready) return null
   if (!session) return <Login />
   // The manager routes only exist once the role is known; routing before that
-  // sent a manager who reloaded /lists (or /radar, /funnel, /playbook, /ledger, /emails, /team) to /dial.
+  // sent a manager who reloaded /lists (or /radar, /funnel, /playbook, /ledger, /emails, /users) to /dial.
   if (profileFor !== session.user.id) return null
 
   const isManager = profile?.role === 'manager'
@@ -76,7 +76,7 @@ export default function App() {
           {isManager && <NavLink to="/ledger" className={({ isActive }) => (isActive ? 'active' : '')}>Handoffs</NavLink>}
           {isManager && <NavLink to="/playbook" className={({ isActive }) => (isActive ? 'active' : '')}>Playbook</NavLink>}
           {isManager && <NavLink to="/emails" className={({ isActive }) => (isActive ? 'active' : '')}>Emails</NavLink>}
-          {isManager && <NavLink to="/team" className={({ isActive }) => (isActive ? 'active' : '')}>Team</NavLink>}
+          {isManager && <NavLink to="/users" className={({ isActive }) => (isActive ? 'active' : '')}>Users</NavLink>}
         </nav>
         <div className="userbox">
           <span>{profile?.name ?? '…'}{isManager ? ' · manager' : ''}</span>
@@ -91,7 +91,8 @@ export default function App() {
         {isManager && <Route path="/lists" element={<Lists />} />}
         {isManager && <Route path="/ledger" element={<Ledger />} />}
         {isManager && <Route path="/emails" element={<Emails myName={profile?.name ?? ''} />} />}
-        {isManager && <Route path="/team" element={<Team me={session.user.id} />} />}
+        {isManager && <Route path="/users" element={<Users me={session.user.id} />} />}
+        {isManager && <Route path="/team" element={<Navigate to="/users" replace />} />}
         {isManager && <Route path="/playbook" element={<Playbook />} />}
         {isManager && <Route path="/radar" element={<Radar />} />}
         <Route path="*" element={<Navigate to="/dial" replace />} />

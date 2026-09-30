@@ -134,6 +134,10 @@ export interface TeamMember {
   /** scheduled callbacks and active lists still assigned to them */
   callbacks: number
   lists: number
+  /** their login is blocked (removed from the Users tab); history kept */
+  removed: boolean
+  /** calls or records on file: removing keeps them, so only a login with none is deleted */
+  has_history: boolean
 }
 
 /** digest(agent, days): D2 coaching. */

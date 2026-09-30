@@ -15,9 +15,10 @@ them) · the scraper project is never modified.
 
 | Folder | What it is |
 |---|---|
-| `app/` | The web portal (Vite + React + Supabase). Agents: Dial, Floor, Coaching. Manager: + Radar, Funnel, Lists, Handoffs, Playbook, Emails, Team. |
+| `app/` | The web portal (Vite + React + Supabase). Agents: Dial, Floor, Coaching. Manager: + Radar, Funnel, Lists, Handoffs, Playbook, Emails, Users. |
 | `supabase/migrations/` | The database schema, queue engine and seeds (already applied to project `dial-floor`, id `fevjrcxmktjwbaozbngo`). |
 | `supabase/functions/zoom-webhook/` | Edge function receiving Zoom `phone.*` webhooks (already deployed). |
+| `supabase/functions/admin-users/` | Edge function behind the Users tab: creates, removes and resets logins (it holds the service key, so the browser never does). |
 | `supabase/tests/` | Queue-engine tests: `supabase/tests/run.sh` applies every migration to a throwaway local Postgres and checks the dialing rules. |
 | `sync/` | Node worker: pulls dialable leads from the hosted console, writes terminal statuses back. Also a CSV importer. |
 | `docs/` | Zoom setup, the Phase 0 checklist, Hostinger deploy. |
@@ -35,11 +36,11 @@ project's public URL and publishable key.
 
 ## First-time setup (one sitting, ~1 hour)
 
-1. **Create logins** — Supabase Dashboard → Authentication → Add user (email +
-   password) for each agent and yourself. Then promote yourself (once, SQL editor):
-   `update profiles set role = 'manager' where id = '<your-user-uuid>';`
-   Everyone else defaults to agent; from then on, names and roles are set on the
-   **Team** tab.
+1. **Logins** — every login after the first manager's is made on the **Users**
+   tab (below). The very first manager is made once in Supabase (Dashboard →
+   Authentication → Add user, then in the SQL editor
+   `update profiles set role = 'manager' where id = '<your-user-uuid>';`); the
+   dialer's first manager already exists, so there is nothing to do here.
 2. **Zoom app** — follow `docs/ZOOM-SETUP.md` (S2S OAuth app, webhook
    subscription pointing at the deployed function, secret into the function's
    env).
@@ -88,13 +89,23 @@ project's public URL and publishable key.
   on the same tab; placeholders like `{business}`, `{city}`, `{agent}` (who took
   the call) and `{my_name}` fill in automatically. The three starter templates
   are drafts: read them and make them yours before sending.
-- **Team** (managers): rename people, make someone a manager or an agent, and
-  take someone off the floor or bring them back. Agents can't change their own
-  role, and a manager can't demote or deactivate themselves, so there's always
-  an active manager. Someone off the floor is served nothing and can't dial (a
-  call already open can still be logged). Their scheduled callbacks and assigned
-  lists stay theirs, and the Team tab shows them until you push the callbacks
-  back (Floor) or reassign the lists (Lists).
+- **Users** (managers): everything about logins, with no trip to Supabase.
+  - **Add user**: name, email, agent or manager. Leave the password blank and
+    one is made up and shown once, with a button that copies the sign-in
+    details to hand over; or type one (8+ characters). They can sign in
+    right away.
+  - Rename someone, change their login email, make them a manager or an agent,
+    **reset password** (made up or typed, shown once), and **take off** the
+    floor or bring them back. Someone off the floor is served nothing and
+    can't dial (a call already open can still be logged).
+  - **Hand back** returns someone's scheduled callbacks to the queue and
+    shares their assigned lists with the whole team, in one click.
+  - **Remove**: a login that never made a call or a record is deleted
+    outright. Anyone with history is removed instead: they can't sign in and
+    are off the floor, while every report keeps their calls. They're listed
+    under **Removed**, and **restore** brings them back.
+  - A manager can't remove, demote or take themselves off the floor, so there's
+    always an active manager. Agents can't change their own role.
 - **Radar** (managers): the first Dial or Radar page of each business day
   ranks the pool and deals every active agent their best leads as a "Radar"
   list (`radar_deal_per_agent`, 0 turns it off). Yesterday's radar lists close,

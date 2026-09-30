@@ -13,7 +13,8 @@ create table auth.users (
   email text,
   raw_user_meta_data jsonb default '{}'::jsonb,
   created_at timestamptz default now(),
-  last_sign_in_at timestamptz
+  last_sign_in_at timestamptz,
+  banned_until timestamptz
 );
 -- auth.uid(): the signed-in user's id, from the request's JWT claims
 create function auth.uid() returns uuid language sql stable as

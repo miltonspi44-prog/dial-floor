@@ -277,6 +277,7 @@ begin
   perform t.fails('select public.radar_deal_now()', 'permission denied');
   perform t.fails(format('select public.digest(%L, 7)', t.uid('A')), 'permission denied');
   perform t.fails('select public.insights(30)', 'permission denied');
+  perform t.fails(format('select public.release_member(%L)', t.uid('A')), 'permission denied');
   perform t.fails('select public.set_member(t.uid(''A''), p_active => false)', 'permission denied');
 end $$;
 reset role;
@@ -813,6 +814,51 @@ begin
     format('words in lost notes: %s', f->'words'->'lost');
   assert not exists (select 1 from jsonb_array_elements(f->'words'->'lost') w where w->>'word' = 'them'), 'stop words are dropped';
   assert (select sum((b->>'calls')::int) from jsonb_array_elements(f->'talk') b) = 19, 'every conversation lands in a talk-time bucket';
+end $$;
+reset role;
+
+\echo '25 · Users: history decides delete vs remove, work can be handed back, a blocked login shows as removed'
+select t.reset() \g /dev/null
+update profiles set active = true;
+set role supabase_auth_admin;
+insert into auth.users (id, email) values ('eeeeeeee-0000-0000-0000-00000000000e', 'new.hire@test');  -- no history yet
+reset role;
+set role authenticated;
+do $$
+declare att bigint; r jsonb;
+begin
+  -- A: a call that ended in a callback, and a list of their own
+  att := t.dial('A', 'X');
+  perform t.log('A', att, 'callback', jsonb_build_object('due_at', now() + interval '1 day'));
+  perform t.as_user('M');
+  perform public.build_list('A''s list', t.uid('A'), '{}', 2);
+
+  assert (select has_history from public.team() where id = t.uid('A')), 'A has calls on file';
+  assert not (select has_history from public.team() where id = 'eeeeeeee-0000-0000-0000-00000000000e'), 'the new hire has none: deletable';
+  assert not exists (select 1 from public.team() where removed), 'nobody is removed yet';
+  assert (select callbacks = 1 and lists = 1 from public.team() where id = t.uid('A')), 'what A still holds';
+  perform t.fails(format('select public.member_history(%L)', t.uid('A')), 'permission denied');
+
+  perform t.as_user('A');
+  perform t.fails(format('select public.release_member(%L)', t.uid('B')), 'manager only');
+
+  perform t.as_user('M');
+  r := public.release_member(t.uid('A'));
+  assert (r->>'callbacks')::int = 1 and (r->>'lists')::int = 1, format('handed back: %s', r);
+  assert (select status = 'requeued' from callbacks where lead_id = t.lead('X')), 'the callback is back in the queue';
+  assert (select state = 'queued' and owner_agent is null from lead_state where lead_id = t.lead('X')), 'and so is its lead';
+  assert (select agent_id is null and status = 'active' from lists where name = 'A''s list'), 'the list is shared with everyone';
+end $$;
+reset role;
+do $$ begin
+  assert (public.member_history(t.uid('A'))->>'attempts')::int = 1, 'the edge function (service role) reads the history';
+end $$;
+-- the edge function blocks a removed login in Auth
+update auth.users set banned_until = now() + interval '100 years' where id = 'eeeeeeee-0000-0000-0000-00000000000e';
+set role authenticated;
+do $$ begin
+  perform t.as_user('M');
+  assert (select removed from public.team() where id = 'eeeeeeee-0000-0000-0000-00000000000e'), 'a blocked login shows as removed';
 end $$;
 reset role;
 

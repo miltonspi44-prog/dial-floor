@@ -47,3 +47,16 @@ export async function loadTargets(): Promise<Targets> {
 export function zoomDial(phoneNorm: string) {
   window.location.href = `zoomphonecall://+1${phoneNorm}`
 }
+
+/** The admin-users edge function (managers only): the function's own message on failure. */
+export async function callAdmin<T>(action: string, payload: Record<string, unknown> = {}): Promise<{ data?: T; error?: string }> {
+  const { data, error } = await supabase.functions.invoke('admin-users', { body: { action, ...payload } })
+  if (!error) return { data: data as T }
+  try {
+    const res = (error as { context?: Response }).context
+    const body = res ? await res.json() : null
+    return { error: body?.error ?? error.message }
+  } catch {
+    return { error: error.message }
+  }
+}
