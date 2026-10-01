@@ -39,10 +39,17 @@ group by number;
 -- Same as before, with one change: the active day ends at the agent's last sign
 -- of life instead of at this moment. Someone who finishes at 4:30pm and shuts
 -- the laptop keeps the rate they were working at, rather than watching it fall
--- all evening while nobody is dialing. The last sign of life is the later of
--- their last dial and their heartbeat, so an agent sitting on the board between
--- calls still has a running clock, and a pause taken after they stopped cannot
--- stretch past that end either. my_pace reads these rows, so the agent's own
+-- all evening while nobody is dialing. The last sign of life is the latest of
+-- their last dial, their heartbeat, and a pause they started and never ended, so
+-- an agent sitting on the board between calls still has a running clock, and so
+-- does someone who said they were going to lunch and then shut the laptop — the
+-- clock has to keep running through a pause like that or the lunch gets clipped
+-- to nothing, the strip reads "paused 0 min" in the middle of it, and the active
+-- and paused halves stop adding up to the day. A pause that was over before the
+-- last sign of life stays where it was. A tab left open all evening still pings
+-- every minute, so its clock keeps running too: an open tab is the only claim
+-- the app makes that somebody is at the desk, and somebody at their desk not
+-- dialing really is falling behind. my_pace reads these rows, so the agent's own
 -- strip shows the same numbers the floor board does.
 create or replace function public.floor_pace()
 returns table (agent_id uuid, dials bigint, connects bigint, conversations bigint, handoffs bigint,
@@ -59,6 +66,7 @@ language sql stable security invoker set search_path = public as $$
     from profiles p
     cross join t
     left join agent_status s on s.agent_id = p.id
+    left join agent_breaks ob on ob.agent_id = p.id and ob.ended_at is null
     cross join lateral (
       select count(*) as dials,
              count(*) filter (where x.connected) as connects,
@@ -67,8 +75,9 @@ language sql stable security invoker set search_path = public as $$
              coalesce(sum(x.duration_seconds) filter (where x.call_result = 'answered'), 0)::bigint as talk_seconds,
              min(x.clicked_at) as first_dial, max(x.clicked_at) as last_dial
         from attempts x where x.agent_id = p.id and x.clicked_at >= t.t0) a
-    cross join lateral (  -- the last sign of life: a dial, or a browser still saying hello
-      select least(now(), greatest(a.last_dial, s.updated_at)) as ended_at) fin
+    cross join lateral (  -- the last sign of life: a dial, a browser still saying hello, or a pause still running
+      select least(now(), greatest(a.last_dial, s.updated_at,
+                                  case when ob.id is not null then now() end)) as ended_at) fin
     left join lateral (  -- paused since the first dial, and never past the end of the day's work
       select sum(greatest(0, extract(epoch from least(coalesce(b.ended_at, now()), fin.ended_at)
                                               - greatest(b.started_at, a.first_dial)))) as s
@@ -77,16 +86,15 @@ language sql stable security invoker set search_path = public as $$
     cross join lateral (
       select case when a.first_dial is null then 0::numeric
                   else greatest(0, extract(epoch from fin.ended_at - a.first_dial) - coalesce(pz.s, 0)) end as s) act
-    left join agent_breaks ob on ob.agent_id = p.id and ob.ended_at is null
    where p.active
 $$;
 
 -- ------------------------------------------------------------------ alerts --
 -- Same alerts, same thresholds, four fixes:
 --   · idle and behind pace are about the people working the phones. A manager
---     who is really dialing today should still be covered, so the rule is
---     "dials today" rather than "never a manager". Wins ring for everyone, as
---     they did.
+--     who is really dialing today should still be covered, so the rule is "a
+--     real number of dials today" rather than "never a manager". Wins ring for
+--     everyone, as they did.
 --   · behind pace now also asks the two questions a manager would ask before
 --     walking over: is this person still here, and did they already make the
 --     number? A tile nobody has touched for five minutes is someone gone, which
@@ -106,6 +114,11 @@ declare
   v_drop numeric := coalesce((public.setting('spam_alert_drop_pts'))::numeric, 10);
   -- dials a week before the two weeks are worth comparing at all
   v_sample int := 30;
+  -- Dials that count as a manager working the phones. The complaint this came
+  -- from was a manager who made one test dial being told on their own board that
+  -- they were idle 14 minutes and behind pace, so "has dialed today" is not the
+  -- line: one dial is poking at the thing, a morning of them is working it.
+  v_mgr_dials int := 10;
   v_tz text := public.business_tz();
   r jsonb := '[]';
 begin
@@ -128,8 +141,8 @@ begin
   r := r || coalesce((
     select jsonb_agg(x order by x->>'at') from (
       -- Idle: a live tile, up and quiet. A manager only counts here once they
-      -- have dialed today; otherwise the manager watching the board was told
-      -- they were the one standing around.
+      -- have really worked the phones today; otherwise the manager watching the
+      -- board was told they were the one standing around.
       select jsonb_build_object(
                'key', 'idle:' || s.agent_id || ':' || extract(epoch from s.since)::bigint,
                'kind', 'idle', 'level', 'warn', 'agent', p.name, 'at', s.since,
@@ -138,25 +151,45 @@ begin
         from agent_status s join profiles p on p.id = s.agent_id
        where v_idle > 0 and p.active and s.updated_at >= now() - interval '5 minutes'
          and s.status in ('idle', 'wrap') and s.since < now() - make_interval(mins => v_idle)
-         and (p.role = 'agent' or exists (select 1 from attempts d
-                                           where d.agent_id = p.id and d.clicked_at >= public.business_day_start()))
+         and (p.role = 'agent' or (select count(*) from attempts d
+                                    where d.agent_id = p.id
+                                      and d.clicked_at >= public.business_day_start()) >= v_mgr_dials)
       union all
-      -- The long call is the open attempt itself: dialed, and no outcome on it
-      -- yet, not even the placeholder the webhook writes when Zoom says the call
-      -- ended. Reading the heartbeat instead meant a browser that died mid-call
-      -- cleared this alert after five quiet minutes, which is exactly when
-      -- somebody should be walking over, and the outcome of that call was never
-      -- going to be logged by itself. Only today's calls: an attempt nobody ever
-      -- logged would otherwise sit on the board for the rest of time. Whoever has
-      -- a call open is dialing, manager or not, so there is nothing to filter.
+      -- The long call is the open attempt itself, not the heartbeat: a browser
+      -- that died mid-call used to clear this alert after five quiet minutes,
+      -- which is exactly when somebody should be walking over, and the outcome of
+      -- that call was never going to be logged by itself. "Open" is said here
+      -- the same way next_lead says it when it hands an agent back a call they
+      -- started and never logged: no outcome on the attempt, or only the
+      -- placeholder the webhook writes when Zoom says the call ended, with the
+      -- lead still in progress under that agent and the call still inside the
+      -- reclaim window. Saying it the same way is the point — every call the
+      -- queue still wants an outcome for is on the board and nothing else is. So
+      -- a lead a manager has released, and one the queue has already finished and
+      -- handed on, stop being that agent's call and stop raising an alert,
+      -- instead of sitting on the board with the minutes climbing and no way for
+      -- anyone to clear them. Whoever has a call open is dialing, manager or not,
+      -- so there is nothing to filter.
       select jsonb_build_object(
                'key', 'long:' || a.agent_id || ':' || a.id,
                'kind', 'long_call', 'level', 'warn', 'agent', p.name, 'at', a.clicked_at,
                'title', p.name || ' on one call ' || floor(extract(epoch from now() - a.clicked_at) / 60) || ' min',
                'detail', l.name || ': still talking, or the browser closed before the outcome was logged')
         from attempts a join profiles p on p.id = a.agent_id join leads l on l.id = a.lead_id
-       where v_long > 0 and p.active and a.disposition is null and not a.auto_logged
-         and a.clicked_at >= public.business_day_start()
+       -- "Open" has to mean the same thing here as it does in next_lead, which hands a
+       -- call back to its agent while the outcome is still only Zoom's placeholder.
+       -- If the board read it any other way a call would fall between the two.
+       where v_long > 0 and p.active and (a.disposition is null or a.auto_logged)
+         and exists (select 1 from lead_state ls
+                      where ls.lead_id = a.lead_id and ls.state = 'in_progress'
+                        and ls.owner_agent = a.agent_id)
+         -- No upper bound on age. Tying this to the window the queue waits before
+         -- calling a call abandoned is what hid the case the alert exists for: a real
+         -- conversation outlives it, and so does a browser that died. The day is not
+         -- the bound either — a call open across the rollover is exactly when a dead
+         -- tab is least likely to be noticed. A day's grace only stops a call nobody
+         -- ever resolved from nagging for ever; by then the lead needs a manager.
+         and a.clicked_at > now() - interval '24 hours'
          and a.clicked_at < now() - make_interval(mins => v_long)) q), '[]'::jsonb);
 
   if v_pace > 0 and v_target > 0 then
@@ -176,7 +209,7 @@ begin
          and f.dials < v_target
          -- and somebody whose tile has gone quiet has gone home: nothing to chase
          and s.status <> 'offline' and s.updated_at >= now() - interval '5 minutes'
-         and (p.role = 'agent' or f.dials > 0)), '[]'::jsonb);
+         and (p.role = 'agent' or f.dials >= v_mgr_dials)), '[]'::jsonb);
   end if;
 
   if v_cb > 0 then
