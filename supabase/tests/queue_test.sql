@@ -1276,4 +1276,4 @@ begin
 end $$;
 reset role;
 
-\echo 'all queue tests passed'
+\echo 'queue tests passed'
