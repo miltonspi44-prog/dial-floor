@@ -943,9 +943,18 @@ reset role;
 \echo '27 · Alerts: idle, a long call, behind pace, an overdue callback and a collapsing number reach managers; everyone hears the bell'
 -- continues from 26: A is 1.5 active hours in at 30 an hour, on pace for 240 of 400
 update agent_status set status = 'idle', since = now() - interval '25 minutes', updated_at = now() where agent_id = t.uid('A');
-insert into agent_status (agent_id, status, lead_name, since, updated_at)
-  values (t.uid('B'), 'dialing', 'W', now() - interval '20 minutes', now())
-  on conflict (agent_id) do update set status = 'dialing', lead_name = 'W', since = excluded.since, updated_at = now();
+-- B is twenty minutes into a call. 0024 reads the long call off the open attempt
+-- instead of off B's tile, because a tile goes stale five minutes after a browser
+-- dies and used to take the alert down with it. So B has to have the call, not
+-- just the tile: one dial through start_attempt writes the attempt, puts the lead
+-- in progress under B and sets the tile, which is how a real floor gets there.
+-- Z rather than W, because A dials W further down and a lead somebody else has
+-- open cannot be dialed.
+select t.dial('B', 'Z') \g /dev/null
+update attempts set clicked_at = now() - interval '20 minutes'
+ where agent_id = t.uid('B') and disposition is null;
+update lead_state set in_progress_since = now() - interval '20 minutes' where lead_id = t.lead('Z');
+update agent_status set since = now() - interval '20 minutes' where agent_id = t.uid('B');
 insert into callbacks (lead_id, agent_id, due_at) values (t.lead('D1'), t.uid('B'), now() - interval '40 minutes');
 insert into number_stats (number, stat_date, dials, connects) values
   ('3055551111', business_date() - 10, 100, 25), ('3055551111', business_date() - 1, 100, 5);

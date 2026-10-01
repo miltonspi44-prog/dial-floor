@@ -6,7 +6,9 @@
 --   phone numbers and every call note. Two changes close that: a new login
 --   arrives switched off until a manager turns it on, and reading now asks
 --   "is this login switched on?" instead of "is this anybody?".
---   The manager-only pages' tables go further and only answer managers.
+--   The manager-only pages' tables go further and only answer managers, which
+--   for the handoff ledger means moving scorecard() onto the definer path so an
+--   agent's own week still reaches them.
 
 -- ----------------------------------------------------------- a new signup --
 -- A stranger who signs up is nobody until a manager says otherwise, so the
@@ -67,17 +69,118 @@ drop policy if exists sync_runs_read on public.sync_runs;
 create policy sync_runs_read on public.sync_runs
   for select to authenticated using (public.is_manager());
 
--- Two of these keep a narrow door open for the agent's own rows, because the
--- agent-facing app really does read them. A weekly scorecard shows an agent the
--- handoffs they made, and scorecard() runs as the caller, so the ledger has to
--- answer an agent about their own deals — just not about anyone else's.
+-- The ledger is the manager's as well. A weekly scorecard does show an agent the
+-- handoffs they made, so it is tempting to let an agent read their own rows —
+-- but the row carries more than the scorecard shows: outcome, outcome_note and
+-- outcome_by are the manager's own record of whether the deal actually came off
+-- and who decided that, and an agent reading the table directly got all three.
+-- So the table answers managers, and the scorecard reaches it another way.
 drop policy if exists handoff_ledger_read on public.handoff_ledger;
 create policy handoff_ledger_read on public.handoff_ledger
-  for select to authenticated using (public.is_manager() or agent_id = (select auth.uid()));
+  for select to authenticated using (public.is_manager());
 
--- Same shape for the email queue: the agent who asked for an email typed that
--- address in themselves, so their own row is no secret from them. The queue as
--- a whole, with every customer's address on it, is the manager's.
+-- Which means scorecard() has to stop reading the ledger as the agent. This is
+-- 0020's function with three changes and nothing else: it runs as its owner, and
+-- the two rules row-level security used to enforce on its behalf are now written
+-- into the body, where the next person reading it can see them.
+create or replace function public.scorecard(p_agent uuid, p_weeks int default 4)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare
+  v_weeks int := greatest(1, least(coalesce(p_weeks, 4), 12));
+  v_tz text := public.business_tz();
+  v_this date := date_trunc('week', public.business_date()::timestamp)::date;
+  v_from timestamptz := (v_this - 7 * (v_weeks - 1))::timestamp at time zone v_tz;
+  v_week timestamptz := v_this::timestamp at time zone v_tz;
+  r jsonb;
+begin
+  if auth.uid() is null then raise exception 'not signed in'; end if;
+  -- Row-level security used to be what kept a login nobody has switched on from
+  -- seeing the floor's numbers here. This function now runs as its owner, so
+  -- policies no longer apply to it and the question has to be asked out loud.
+  if not public.is_active() then raise exception 'your login is not switched on yet'; end if;
+  if p_agent is distinct from auth.uid() and not is_manager() then
+    raise exception 'agents see their own scorecard';
+  end if;
+
+  with a as (
+    select x.*, date_trunc('week', x.clicked_at at time zone v_tz)::date as wk,
+           public.is_conversation(x.connected, x.disposition) as convo
+      from attempts x where x.clicked_at >= v_from
+  ),
+  per as (  -- each agent's week
+    select a.agent_id, a.wk,
+           count(*) as dials,
+           count(distinct (a.clicked_at at time zone v_tz)::date) as days,
+           count(*) filter (where a.call_result = 'answered' or coalesce(a.connected, false)) as picked_up,
+           count(*) filter (where a.convo) as conversations,
+           count(*) filter (where a.convo and public.kept_alive(a.disposition)) as kept,
+           count(*) filter (where a.disposition in ('chance_website', 'sale_closed')) as won,
+           coalesce(sum(a.duration_seconds) filter (where a.call_result = 'answered'), 0) as talk_seconds,
+           count(*) filter (where a.disposition = 'callback') as callbacks_set
+      from a group by a.agent_id, a.wk
+  ),
+  cb as (  -- promised callbacks that came due that week: kept or missed
+    select c.agent_id, date_trunc('week', c.due_at at time zone v_tz)::date as wk,
+           count(*) filter (where c.status = 'done') as done, count(*) filter (where c.status = 'missed') as missed
+      from callbacks c
+     where c.due_at >= v_from and c.due_at < now() and c.status in ('done', 'missed')
+     group by 1, 2
+  ),
+  weeks as (select (v_this - 7 * g)::date as wk from generate_series(0, v_weeks - 1) g)
+  select jsonb_build_object(
+    'agent', (select jsonb_build_object('id', p.id, 'name', p.name) from profiles p where p.id = p_agent),
+    'this_week', v_this,
+    'weeks', (select jsonb_agg(jsonb_build_object(
+        'week', w.wk,
+        'me', jsonb_build_object(
+           'dials', coalesce(m.dials, 0), 'days', coalesce(m.days, 0), 'picked_up', coalesce(m.picked_up, 0),
+           'conversations', coalesce(m.conversations, 0), 'kept', coalesce(m.kept, 0), 'won', coalesce(m.won, 0),
+           'talk_seconds', coalesce(m.talk_seconds, 0), 'callbacks_set', coalesce(m.callbacks_set, 0),
+           'cb_done', coalesce(mc.done, 0), 'cb_missed', coalesce(mc.missed, 0)),
+        -- the floor's totals and headcount: averages and pooled rates are taken from these
+        'floor', (select jsonb_build_object(
+           'agents', count(*), 'dials', coalesce(sum(f.dials), 0), 'days', coalesce(sum(f.days), 0),
+           'picked_up', coalesce(sum(f.picked_up), 0), 'conversations', coalesce(sum(f.conversations), 0),
+           'kept', coalesce(sum(f.kept), 0), 'won', coalesce(sum(f.won), 0),
+           'talk_seconds', coalesce(sum(f.talk_seconds), 0), 'callbacks_set', coalesce(sum(f.callbacks_set), 0),
+           'cb_done', (select coalesce(sum(done), 0) from cb where cb.wk = w.wk),
+           'cb_missed', (select coalesce(sum(missed), 0) from cb where cb.wk = w.wk))
+           from per f where f.wk = w.wk))
+        order by w.wk)
+      from weeks w
+      left join per m on m.wk = w.wk and m.agent_id = p_agent
+      left join cb mc on mc.wk = w.wk and mc.agent_id = p_agent),
+    'handoffs', (select coalesce(jsonb_agg(jsonb_build_object(
+                    'at', h.handed_at, 'lead', h.lead_snapshot->>'name', 'kind', h.kind, 'summary', h.summary,
+                    'rating', h.rating, 'outcome', h.outcome) order by h.handed_at), '[]'::jsonb)
+                   from handoff_ledger h where h.agent_id = p_agent and h.handed_at >= v_week),
+    'review', (select coalesce(jsonb_agg(jsonb_build_object(
+                  'attempt_id', x.id, 'at', x.clicked_at, 'lead', l.name, 'disposition', x.disposition,
+                  'duration', x.duration_seconds, 'note', x.note,
+                  'objections', (select coalesce(jsonb_agg(distinct b.objection), '[]'::jsonb)
+                                   from card_taps t join battlecards b on b.id = t.card_id where t.attempt_id = x.id))
+                  order by x.duration_seconds desc), '[]'::jsonb)
+                 from (select * from attempts y
+                        where y.agent_id = p_agent and y.clicked_at >= v_week
+                          and public.is_conversation(y.connected, y.disposition) and not public.kept_alive(y.disposition)
+                          and y.duration_seconds >= 120
+                        order by y.duration_seconds desc limit 3) x
+                 join leads l on l.id = x.lead_id),
+    -- Saved calls are the manager's, like the Playbook page they live on. The
+    -- library's own manager-only policy used to be what kept agents out of this
+    -- list; running as the owner skips that policy, so the rule is written here.
+    'saved', (select coalesce(jsonb_agg(jsonb_build_object('id', li.id, 'title', li.title, 'scenario', li.scenario,
+                                                           'at', li.created_at) order by li.created_at), '[]'::jsonb)
+                from library_items li join attempts y on y.id = li.attempt_id
+               where y.agent_id = p_agent and y.clicked_at >= v_week and public.is_manager()))
+    into r;
+  return r;
+end $$;
+
+-- The email queue does keep a narrow door open for the agent's own row: the
+-- agent who asked for an email typed that address in themselves, so it is no
+-- secret from them. The queue as a whole, with every customer's address on it,
+-- is the manager's.
 drop policy if exists email_queue_read on public.email_queue;
 create policy email_queue_read on public.email_queue
   for select to authenticated using (public.is_manager() or flagged_by = (select auth.uid()));
@@ -129,3 +232,9 @@ create index if not exists handoff_ledger_lead_idx on public.handoff_ledger (lea
 create index if not exists card_taps_card_idx on public.card_taps (card_id);
 create index if not exists card_taps_agent_idx on public.card_taps (agent_id);
 create index if not exists attempts_list_idx on public.attempts (list_id);
+
+-- And two the first pass missed, both on a column something above filters by on
+-- every single read: the email queue's own policy tests flagged_by, and every
+-- scorecard anyone opens looks that agent's handoffs up by agent_id.
+create index if not exists handoff_ledger_agent_idx on public.handoff_ledger (agent_id);
+create index if not exists email_queue_flagged_idx on public.email_queue (flagged_by);

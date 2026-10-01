@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Profile } from '../lib/types'
 
@@ -10,7 +10,7 @@ interface ListRow {
   kind: 'manual' | 'radar' | 'recycle' | 'referrals'
   agent_id: string | null
   profiles: { name: string } | null
-  /** Postgres counts the items for us; see the select in refresh(). */
+  /** Postgres counts the items for us; see the select in the effect below. */
   total: { count: number }[] | null
   served: { count: number }[] | null
 }
@@ -36,6 +36,14 @@ const STATUSES: { key: string; label: string }[] = [
 ]
 const KINDS = ['', 'manual', 'radar', 'recycle', 'referrals']
 
+/** The Status column says the same word the Status filter and the close button do.
+ *  The database calls a finished list 'done' and everything a manager reads calls
+ *  it "closed", and a column full of "done" under a filter called "closed" reads
+ *  like a bug. 'open' and 'any status' are filter-only keys, so no row matches them. */
+function statusWord(status: string): string {
+  return STATUSES.find((s) => s.key === status)?.label ?? status
+}
+
 /** Lists per page. The morning radar deals one list per agent per day and adds
  *  the recycle and referral lists, so a floor of four agents makes about six a
  *  day: unpaged, a manual list that is still being dialed drops off the bottom
@@ -51,6 +59,10 @@ export default function Lists() {
   const [filter, setFilter] = useState({ status: 'open', kind: '' })
   const [fetched, setFetched] = useState<string | null>(null) // the filter and page the rows on screen came from
   const [error, setError] = useState<string | null>(null)
+  // A refused close or archive is its own banner. It says nothing about whether the
+  // lists loaded, so it must not make the heading claim the count is unknown.
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0) // bumped to ask the same question again after a change
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({ name: '', agent: '', state: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
@@ -60,7 +72,17 @@ export default function Lists() {
   const loading = fetched !== query
   const loaded = fetched !== null
 
-  const refresh = useCallback(() => {
+  // Asks the same question again, after a build or a change to a row.
+  function refresh() { setReload((n) => n + 1) }
+
+  useEffect(() => {
+    // A manager picks Status and then Kind inside the same second, so two requests
+    // can be in flight at once and the slower one can land last. Everything this
+    // request writes is gated on it still being the newest one. A superseded answer
+    // that got through would fill the table with rows the dropdowns no longer ask
+    // for, and `fetched` would never catch up to `query`, which leaves the card
+    // dimmed and both pager buttons dead until the next filter change.
+    let live = true
     // Both numbers in the burn-down come back with the lists themselves: Postgres
     // counts the items per list, so this is one request rather than two more for
     // every row on the page.
@@ -79,13 +101,23 @@ export default function Lists() {
       .order('id', { ascending: false })
       .range(page * PAGE, page * PAGE + PAGE - 1)
       .then(({ data, count, error: e }) => {
+        if (!live) return
         setFetched(query)
-        if (e) { setError(`The lists did not load: ${e.message}`); return }
+        if (e) {
+          // The heading, the banner and the empty table all have to say the same
+          // thing, so the rows from the last good load go with the count: rows on
+          // screen under a heading that says the count is unknown is the worse lie.
+          setError(`The lists did not load: ${e.message}`)
+          setLists([])
+          setTotal(0)
+          return
+        }
         setError(null)
         setLists((data ?? []) as unknown as ListRow[])
         setTotal(count ?? 0)
       })
-  }, [filter.status, filter.kind, page, query])
+    return () => { live = false }
+  }, [filter.status, filter.kind, page, query, reload])
 
   useEffect(() => {
     supabase.from('profiles').select('*').eq('active', true).order('name')
@@ -95,8 +127,6 @@ export default function Lists() {
         setAgents((data ?? []) as Profile[])
       })
   }, [])
-
-  useEffect(() => { refresh() }, [refresh])
 
   function narrow(next: { status?: string; kind?: string }) {
     setFilter({ ...filter, ...next })
@@ -127,15 +157,20 @@ export default function Lists() {
   }
 
   async function setStatus(l: ListRow, status: 'done' | 'archived') {
-    const left = tally(l.total) - tally(l.served)
+    // A list built from rules that matched nothing has no leads at all, so saying
+    // every lead was dialed would be a claim about leads that never existed.
+    const on = tally(l.total)
+    const left = on - tally(l.served)
     const ask = status === 'done'
       ? `Close “${l.name}”? ` + (left
         ? `${left} lead${left === 1 ? ' has' : 's have'} not been dialed yet, and closing the list stops them being handed out.`
-        : 'Every lead on it has been dialed.')
+        : on ? 'Every lead on it has been dialed.'
+          : 'It has no leads on it.')
       : `Archive “${l.name}”? It drops out of the way, and you only see it again by asking for archived lists. Nothing on it is deleted.`
     if (!window.confirm(ask)) return
     const { error: e } = await supabase.from('lists').update({ status }).eq('id', l.id)
-    if (e) { setError(`“${l.name}” did not change: ${e.message}`); return }
+    if (e) { setActionError(`“${l.name}” did not change: ${e.message}`); return }
+    setActionError(null)
     refresh()
   }
 
@@ -174,11 +209,14 @@ export default function Lists() {
 
       <div className="sectionhead">
         <h3>Lists</h3>
+        {/* Held while the rows are on their way, so a second pick cannot stack a
+            request behind the first one and leave the table and the dropdowns
+            telling the manager two different things. */}
         <div className="formrow">
-          <label>Status<select value={filter.status} onChange={(e) => narrow({ status: e.target.value })}>
+          <label>Status<select value={filter.status} disabled={loading} onChange={(e) => narrow({ status: e.target.value })}>
             {STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select></label>
-          <label>Kind<select value={filter.kind} onChange={(e) => narrow({ kind: e.target.value })}>
+          <label>Kind<select value={filter.kind} disabled={loading} onChange={(e) => narrow({ kind: e.target.value })}>
             {KINDS.map((k) => <option key={k} value={k}>{k || 'any kind'}</option>)}
           </select></label>
         </div>
@@ -187,6 +225,7 @@ export default function Lists() {
         </span>
       </div>
       {error && <div className="card alertcard">{error}</div>}
+      {actionError && <div className="card alertcard">{actionError}</div>}
       <div className={`card ${loading && loaded ? 'stale' : ''}`}>
         <div className="tablewrap">
           <table className="data">
@@ -198,7 +237,7 @@ export default function Lists() {
                   <td>{l.list_date}</td>
                   <td>{l.profiles?.name ?? '—'}</td>
                   <td>{tally(l.served)}/{tally(l.total)}</td>
-                  <td>{l.status}</td>
+                  <td>{statusWord(l.status)}</td>
                   <td className="rowactions">
                     {l.status === 'active' ? <button className="btn ghost" onClick={() => setStatus(l, 'done')}>close</button>
                       : l.status === 'archived' ? <span className="muted">—</span>
@@ -213,18 +252,26 @@ export default function Lists() {
                       : error ? 'The lists could not be read, so none can be shown.'
                         : total ? 'Nothing left on this page — go back towards the newer lists.'
                           : filter.status !== 'open' || filter.kind ? 'No lists match that filter.'
-                            : 'No lists yet. Build one above, or the morning radar will deal them out.'}
+                            // "still open" is itself a filter — it hides the archived ones — so
+                            // this cannot promise there are no lists at all, only none still open.
+                            : 'No lists are still open. Build one above, or pick “archived” to see ones already put away.'}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-        {total > PAGE && (
+        {/* The pager stays on screen on any page past the first, even when what is
+            left now fits on one page: archiving the only row of page 2 drops the
+            total back under a pageful, and without the second test the Newer button
+            would vanish with the manager stranded on an empty page. */}
+        {(total > PAGE || page > 0) && (
           <div className="actionrow" style={{ marginTop: 10 }}>
             <button className="btn" disabled={page === 0 || loading} onClick={() => setPage(page - 1)}>Newer</button>
             <button className="btn" disabled={to >= total || loading} onClick={() => setPage(page + 1)}>Older</button>
-            <span className="muted small">{from}–{to} of {total}</span>
+            {/* On a page whose rows have all been archived away, from–to would count
+                past the total ("41–40 of 40"), so say only what is still true. */}
+            <span className="muted small">{lists.length ? `${from}–${to} of ${total}` : `${total} in all`}</span>
           </div>
         )}
       </div>

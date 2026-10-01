@@ -45,14 +45,26 @@ function varsFor(r: EmailRow | null, myName: string): Record<string, string> {
  *  template and tracks; a human sends from their own mail client. */
 export default function Emails({ myName }: { myName: string }) {
   const [waiting, setWaiting] = useState<EmailRow[]>([])
+  const [waitingTotal, setWaitingTotal] = useState(0) // what the server counts, not what it chose to send
+  const [queueLoaded, setQueueLoaded] = useState(false)
   const [done, setDone] = useState<EmailRow[]>([])
   const [doneTotal, setDoneTotal] = useState(0)
   const [shown, setShown] = useState(HISTORY_PAGE) // rows of history asked for so far
   const [fetched, setFetched] = useState<number | null>(null) // the history size the rows on screen came from
   const [asks, setAsks] = useState<Record<number, string>>({}) // queue id → the note on the call that queued it
   const [templates, setTemplates] = useState<EmailTemplate[]>([])
-  const [error, setError] = useState<string | null>(null)
+  // Three things can fail on their own, so each says so on its own. One shared
+  // error would make a failed note lookup tell the manager that the number of
+  // waiting emails is unknown while the waiting emails sit on screen below it.
+  const [queueError, setQueueError] = useState<string | null>(null)
+  const [noteError, setNoteError] = useState<string | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  // A refused mark-sent stays on screen. A toast that clears itself after a second
+  // and a half is how a manager comes away believing an email went out when the row
+  // never moved, which is the one mistake this page exists to prevent.
+  const [actionError, setActionError] = useState<string | null>(null)
   const [tplError, setTplError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0) // bumped to ask for both halves again after a change
   const [openId, setOpenId] = useState<number | null>(null)
   const [draft, setDraft] = useState<Draft>({ templateId: null, subject: '', body: '' })
   const [edit, setEdit] = useState<TemplateDraft | null>(null)
@@ -63,48 +75,96 @@ export default function Emails({ myName }: { myName: string }) {
     window.setTimeout(() => setToast(null), 1800)
   }
 
-  const refresh = useCallback(() => {
+  // Asks for both halves again, after a row has been marked sent or skipped.
+  function refresh() { setReload((n) => n + 1) }
+
+  useEffect(() => {
     // The emails still waiting are the work, so every one of them comes down, no
     // matter how many: a request that fell off the end of a page is an email a
-    // customer was promised and never got. The finished ones are only a record,
-    // so they stay capped and the manager asks for more when they want them.
-    // Oldest waiting first, because the one promised longest ago is the late one.
-    Promise.all([
-      supabase.from('email_queue').select(COLUMNS)
-        .eq('status', 'flagged')
-        .order('created_at'),
-      supabase.from('email_queue').select(COLUMNS, { count: 'exact' })
-        .neq('status', 'flagged')
-        .order('created_at', { ascending: false })
-        .range(0, shown - 1),
-    ]).then(([queue, past]) => {
-      setFetched(shown)
-      const failed = queue.error ?? past.error
-      if (failed) { setError(`The email queue did not load: ${failed.message}`); return }
-      setError(null)
-      const list = (queue.data ?? []) as unknown as EmailRow[]
-      setWaiting(list)
-      setDone((past.data ?? []) as unknown as EmailRow[])
-      setDoneTotal(past.count ?? 0)
-      if (!list.length) { setAsks({}); return }
-      // what the lead asked for: the agent's note on the call that queued the email
-      supabase.from('attempts')
-        .select('lead_id, agent_id, note, clicked_at')
-        .eq('disposition', 'email_requested')
-        .in('lead_id', [...new Set(list.map((r) => r.lead_id))])
-        .order('clicked_at', { ascending: false })
-        .then(({ data: calls, error: noteError }) => {
-          if (noteError) { setError(`The queue loaded, but what each lead asked for did not: ${noteError.message}`); return }
-          const found: Record<number, string> = {}
-          for (const r of list) {
-            const call = (calls ?? []).find((c) => c.lead_id === r.lead_id && c.agent_id === r.flagged_by
-              && Date.parse(c.clicked_at) <= Date.parse(r.created_at))
-            if (call?.note) found[r.id] = call.note
-          }
-          setAsks(found)
-        })
-    })
-  }, [shown])
+    // customer was promised and never got. The count comes down beside them because
+    // the API has its own ceiling on how many rows it will return, and without the
+    // count a page capped at that ceiling would quietly under-report the backlog.
+    // Oldest first, because the one promised longest ago is the late one.
+    // This is its own request, separate from the history below, so that asking for
+    // another page of history does not fetch the whole backlog again.
+    let live = true
+    supabase.from('email_queue').select(COLUMNS, { count: 'exact' })
+      .eq('status', 'flagged')
+      .order('created_at')
+      .then(({ data, count, error: e }) => {
+        // A mark-sent and the refresh it triggers can overlap, so anything this
+        // request writes is gated on it still being the newest one.
+        if (!live) return
+        setQueueLoaded(true)
+        if (e) {
+          // The header, the banner and the empty table have to say the same thing,
+          // so the rows from the last good load go with the count: rows on screen
+          // under a header that says the count is unknown is the worse lie.
+          setQueueError(`The email queue did not load: ${e.message}`)
+          setWaiting([]); setWaitingTotal(0); setAsks({}); setNoteError(null)
+          return
+        }
+        setQueueError(null)
+        const list = (data ?? []) as unknown as EmailRow[]
+        setWaiting(list)
+        setWaitingTotal(count ?? list.length)
+        if (!list.length) { setAsks({}); setNoteError(null); return }
+        // what the lead asked for: the agent's note on the call that queued the email
+        supabase.from('attempts')
+          .select('lead_id, agent_id, note, clicked_at')
+          .eq('disposition', 'email_requested')
+          .in('lead_id', [...new Set(list.map((r) => r.lead_id))])
+          .order('clicked_at', { ascending: false })
+          .then(({ data: calls, error: failed }) => {
+            if (!live) return
+            if (failed) {
+              // The notes are extra detail beside a row, so their failure gets its
+              // own line and leaves the count alone. The old notes go either way: a
+              // note from the last refresh sitting beside a row it may not belong
+              // to is worse than no note at all.
+              setNoteError(`The queue loaded, but what each lead asked for did not: ${failed.message}`)
+              setAsks({})
+              return
+            }
+            setNoteError(null)
+            const found: Record<number, string> = {}
+            for (const r of list) {
+              const call = (calls ?? []).find((c) => c.lead_id === r.lead_id && c.agent_id === r.flagged_by
+                && Date.parse(c.clicked_at) <= Date.parse(r.created_at))
+              if (call?.note) found[r.id] = call.note
+            }
+            setAsks(found)
+          })
+      })
+    return () => { live = false }
+  }, [reload])
+
+  useEffect(() => {
+    // The finished emails are only a record, so they stay capped at a page and the
+    // manager asks for more when they want them.
+    let live = true
+    supabase.from('email_queue').select(COLUMNS, { count: 'exact' })
+      .neq('status', 'flagged')
+      .order('created_at', { ascending: false })
+      .range(0, shown - 1)
+      .then(({ data, count, error: e }) => {
+        // Marking a row sent and then clicking for more history puts two requests in
+        // flight. Without this the first one could land last, leaving `fetched`
+        // behind `shown` for good: the button would read "Loading…", stay disabled,
+        // and the history could not be paged again without reloading the page.
+        if (!live) return
+        setFetched(shown)
+        if (e) {
+          setHistoryError(`The sent and skipped emails did not load: ${e.message}`)
+          setDone([]); setDoneTotal(0)
+          return
+        }
+        setHistoryError(null)
+        setDone((data ?? []) as unknown as EmailRow[])
+        setDoneTotal(count ?? 0)
+      })
+    return () => { live = false }
+  }, [shown, reload])
 
   const loadTemplates = useCallback(() => {
     supabase.from('email_templates')
@@ -117,7 +177,6 @@ export default function Emails({ myName }: { myName: string }) {
       })
   }, [])
 
-  useEffect(() => { refresh() }, [refresh])
   useEffect(() => { loadTemplates() }, [loadTemplates])
 
   function copy(text: string, msg = 'Copied') {
@@ -148,7 +207,11 @@ export default function Emails({ myName }: { myName: string }) {
       sent_by: (await supabase.auth.getUser()).data.user?.id,
       sent_at: status === 'sent' ? new Date().toISOString() : null,
     }).eq('id', r.id)
-    if (e) { say(e.message); return }
+    if (e) {
+      setActionError(`${r.leads?.name ?? r.email} is still waiting — it was not marked ${status}: ${e.message}`)
+      return
+    }
+    setActionError(null)
     if (openId === r.id) setOpenId(null)
     say(status === 'sent' ? 'Marked sent' : 'Skipped')
     refresh()
@@ -177,10 +240,12 @@ export default function Emails({ myName }: { myName: string }) {
   }
 
   // a request is in flight while the history on screen is a smaller page than the one asked for
-  const loading = fetched !== shown
-  const loaded = fetched !== null
+  const historyLoading = fetched !== shown
+  const historyLoaded = fetched !== null
   const active = templates.filter((t) => t.active)
   const leftover = /\{[a-z_]+\}/i.test(draft.subject + draft.body)
+  // The queue is oldest first, so this is the email that has been waiting longest:
+  // the row at the top of the table, and the one a manager is about to write.
   const previewRow = waiting[0] ?? null
   // placeholders the editor's text uses that nothing fills in (a typo, usually)
   const unknown = edit
@@ -194,11 +259,22 @@ export default function Emails({ myName }: { myName: string }) {
       <div className="sectionhead">
         <h3>Email queue</h3>
         <span className="muted small">
-          {!loaded ? 'counting…' : error ? 'how many are waiting is unknown' : `${waiting.length} waiting`}
+          {!queueLoaded ? 'counting…' : queueError ? 'how many are waiting is unknown' : `${waitingTotal} waiting`}
           {' '}· write it from a template, send it from your own mail app, then mark it sent
         </span>
       </div>
-      {error && <div className="card alertcard">{error}</div>}
+      {queueError && <div className="card alertcard">{queueError}</div>}
+      {noteError && <div className="card alertcard">{noteError}</div>}
+      {actionError && <div className="card alertcard">{actionError}</div>}
+      {/* The server has a ceiling on how many rows one request may return. If the
+          backlog ever passes it, say so rather than let the missing requests look
+          like requests that were never made. */}
+      {waitingTotal > waiting.length && (
+        <div className="card alertcard">
+          {waitingTotal} emails are waiting, but the server would only send {waiting.length} of them at once,
+          so the oldest {waiting.length} are shown here. Clear some and the rest appear.
+        </div>
+      )}
       <div className="card">
         <div className="tablewrap">
           <table className="data">
@@ -256,8 +332,8 @@ export default function Emails({ myName }: { myName: string }) {
               {!waiting.length && (
                 <tr>
                   <td colSpan={5} className="muted">
-                    {!loaded ? 'Loading the queue…'
-                      : error ? 'The queue could not be read, so there is nothing to show here.'
+                    {!queueLoaded ? 'Loading the queue…'
+                      : queueError ? 'The queue could not be read, so there is nothing to show here.'
                         : 'Queue is clear.'}
                   </td>
                 </tr>
@@ -330,15 +406,21 @@ export default function Emails({ myName }: { myName: string }) {
         </div>
       )}
 
-      {doneTotal > 0 && (
+      {/* Shown while the first page is still on its way, and when it failed, so the
+          history has a "loading" line and an error of its own instead of looking
+          like a floor that has never sent an email. */}
+      {(!historyLoaded || historyError || doneTotal > 0) && (
         <>
           <div className="sectionhead">
             <h3>History</h3>
             <span className="muted small">
-              {done.length === doneTotal ? `all ${doneTotal}` : `the newest ${done.length} of ${doneTotal}`}, sent or skipped
+              {!historyLoaded ? 'counting…'
+                : historyError ? 'how many have gone out is unknown'
+                  : `${done.length === doneTotal ? `all ${doneTotal}` : `the newest ${done.length} of ${doneTotal}`}, sent or skipped`}
             </span>
           </div>
-          <div className={`card ${loading ? 'stale' : ''}`}>
+          {historyError && <div className="card alertcard">{historyError}</div>}
+          <div className={`card ${historyLoading && historyLoaded ? 'stale' : ''}`}>
             <div className="tablewrap">
               <table className="data">
                 <thead><tr><th>Flagged</th><th>Lead</th><th>Email</th><th>Outcome</th><th>Template</th></tr></thead>
@@ -352,13 +434,22 @@ export default function Emails({ myName }: { myName: string }) {
                       <td>{r.template ?? <span className="muted">—</span>}</td>
                     </tr>
                   ))}
+                  {!done.length && (
+                    <tr>
+                      <td colSpan={5} className="muted">
+                        {!historyLoaded ? 'Loading the history…'
+                          : historyError ? 'The history could not be read, so none of it can be shown.'
+                            : 'Nothing has been sent or skipped yet.'}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
             {done.length < doneTotal && (
               <div className="actionrow" style={{ marginTop: 10 }}>
-                <button className="btn" disabled={loading} onClick={() => setShown(shown + HISTORY_PAGE)}>
-                  {loading ? 'Loading…' : `Show ${Math.min(HISTORY_PAGE, doneTotal - done.length)} more`}
+                <button className="btn" disabled={historyLoading} onClick={() => setShown(shown + HISTORY_PAGE)}>
+                  {historyLoading ? 'Loading…' : `Show ${Math.min(HISTORY_PAGE, doneTotal - done.length)} more`}
                 </button>
               </div>
             )}
