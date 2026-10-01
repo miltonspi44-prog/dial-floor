@@ -1,5 +1,6 @@
 // Long-running mode: pull every PULL_INTERVAL_MIN (default 15), push every minute.
-// Run it on any always-on PC:  npm run loop   (or via Task Scheduler, see README)
+// Run it on any always-on PC:  npm run loop
+// (or via Task Scheduler — sync/README.md has the step-by-step)
 import { pull } from './pull-leads.mjs'
 import { push } from './push-status.mjs'
 import { logRun } from './lib/supa.mjs'
@@ -28,6 +29,11 @@ async function safely(kind, fn) {
     // The console has refused our password. Every run from here on would be another
     // failed sign-in, and ten of those lock the console for the owner too, so the
     // loop stops. console.mjs has already printed what to do about it.
+    //
+    // Only that. A console that is locked, asleep, slow, or losing our session is
+    // not this, and the loop keeps its clock and comes back on the next tick: those
+    // all clear up by themselves, and stopping the worker over one would mean nobody
+    // calls anybody until a person notices it is down.
     if (isAuthFailure(e)) stop()
   } finally {
     busy = false

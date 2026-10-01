@@ -7,14 +7,22 @@
 // console refuses is remembered and never tried again while this process lives,
 // and only trouble that is plainly not our fault — a timeout, a dead host — is
 // worth another go.
+//
+// A lockout itself is not the console refusing our password. It counts failures
+// per address and answers 429 before it even looks at what we sent, so asking
+// again while the lock is on adds nothing to the count — it is usually the owner
+// mistyping at the console, and it clears itself a quarter of an hour after the
+// last try. So a lockout is something to wait out, not a reason to stop the
+// worker; only a plain 401 on the password is that.
 
 const BASE = (process.env.CONSOLE_URL ?? 'https://leads.sedsolutions.online').replace(/\/$/, '')
 const PASSWORD = process.env.CONSOLE_PASSWORD ?? ''
 
 // A request that never comes back would otherwise hold the sync open forever and
 // block every run behind it. Generous, because a thousand-row page off shared
-// hosting is genuinely slow.
-const TIMEOUT_MS = 120_000
+// hosting is genuinely slow. CONSOLE_TIMEOUT_MS in .env shortens it for a host that
+// is known to be quicker than this.
+const TIMEOUT_MS = Number(process.env.CONSOLE_TIMEOUT_MS) || 120_000
 
 // api.php caps `limit` at 1000 and quietly gives less if you ask for more.
 const PAGE_MAX = 1000
@@ -22,32 +30,45 @@ const PAGE_MAX = 1000
 // The furthest we will walk through the console's list in one pass.
 const MAX_PAGES = 200
 
+// How long to leave the console alone after it says sign-ins are locked. The lock
+// is fifteen minutes from the last try; the extra minute is slack for clocks.
+const LOCKOUT_WAIT_MS = 16 * 60_000
+
 let cookie = null
 // Set once we know the password is no good, and never cleared: it is both the
 // reason to refuse every later login and the message the owner needs to read.
 let passwordRefused = null
+// When the console's sign-in lock should have expired. Until then there is nothing
+// to gain by asking, and the run that wanted a session is simply deferred.
+let lockedUntil = 0
 
 /** A console failure with the one thing a caller needs to decide what to do next:
  *  `kind` is 'auth' (it will not let us in — stop), 'rejected' (it understood and
- *  said no — trying again changes nothing) or 'retry' (not our doing: try later). */
+ *  said no — trying again changes nothing) or 'retry' (not our doing: try later).
+ *  `reached` is false when the request never got an answer at all, which on its own
+ *  says nothing about whether it was the host or the thing we asked for. */
 export class ConsoleError extends Error {
-  constructor(message, kind, status = null) {
+  constructor(message, kind, status = null, { reached = true } = {}) {
     super(message)
     this.name = 'ConsoleError'
     this.kind = kind
     this.status = status
+    this.reached = reached
   }
 }
 
 export const isAuthFailure = (e) => e?.kind === 'auth'
 export const isRejected = (e) => e?.kind === 'rejected'
+/** The console never answered this request at all. Which tells you nothing about the
+ *  next one: shared hosting kills a single request whose body its firewall dislikes,
+ *  and a PHP fatal on a long note closes the socket, while every other request to the
+ *  same host goes through. Ask consoleAnswers() rather than concluding from this. */
+export const isUnreachable = (e) => e?.kind === 'retry' && e?.reached === false
 /** True once the console has refused the password, so callers can stop early. */
 export const passwordIsRefused = () => passwordRefused != null
 
 function rememberRefusal(status) {
-  passwordRefused = status === 429
-    ? 'The lead console has locked sign-ins for fifteen minutes: too many wrong passwords.'
-    : 'The lead console would not accept the sync password.'
+  passwordRefused = 'The lead console would not accept the sync password.'
   // Printed once, here, because this is the only moment we learn it. The owner is
   // the only person who can fix it, and the worst thing we could do is keep trying.
   console.error('')
@@ -56,9 +77,23 @@ function rememberRefusal(status) {
   console.error('for everyone, and that includes you.')
   console.error(`What to do: open ${BASE}, check the password you sign in with, put that same`)
   console.error('password in CONSOLE_PASSWORD in sync/.env, then start the sync again.')
-  if (status === 429) console.error('The lock clears by itself fifteen minutes after the last try.')
   console.error('')
   return new ConsoleError(passwordRefused, 'auth', status)
+}
+
+function rememberLockout(why) {
+  lockedUntil = Date.now() + LOCKOUT_WAIT_MS
+  // Said out loud because it looks alarming in the log and the owner should know
+  // it needs nothing from them. It is not about our password: the console counts
+  // tries per address and turns us away before reading the one we sent.
+  console.error('')
+  console.error('The lead console has locked sign-ins for fifteen minutes: too many wrong passwords.')
+  console.error('That count is for everyone on this connection, so it is usually a mistyped')
+  console.error('password at the console itself. The lock clears by itself fifteen minutes after')
+  console.error('the last try, and asking again while it is on does not extend it.')
+  console.error('The sync will leave it alone until then and carry on by itself afterwards.')
+  console.error('')
+  return new ConsoleError(`console login: ${why}`, 'retry', 429)
 }
 
 async function api(action, { method = 'GET', params = {}, body, replayed = false } = {}) {
@@ -81,7 +116,7 @@ async function api(action, { method = 'GET', params = {}, body, replayed = false
     // The host being unreachable, slow or cut off mid-answer says nothing about
     // our password, so this is always worth another try later.
     const why = e?.name === 'TimeoutError' ? `no answer in ${TIMEOUT_MS / 1000}s` : e.message
-    throw new ConsoleError(`console ${action}: ${why}`, 'retry')
+    throw new ConsoleError(`console ${action}: ${why}`, 'retry', null, { reached: false })
   }
 
   let json
@@ -94,16 +129,29 @@ async function api(action, { method = 'GET', params = {}, body, replayed = false
   }
   const why = json?.error ?? res.status
 
-  if (res.status === 429 && action !== 'login') {
+  // Sign-ins are locked for a quarter of an hour. Nothing about our password has
+  // been judged, so this is only a wait — never a reason to give up on it.
+  if (res.status === 429) {
+    if (action === 'login') throw rememberLockout(why)
     throw new ConsoleError(`console ${action}: ${why}`, 'retry', 429)
   }
-  if (res.status === 401 || res.status === 429) {
+  if (res.status === 401) {
     if (action === 'login') throw rememberRefusal(res.status)
     // Any other action answering 401 means the PHP session we were given has
     // expired, which happens on its own after about twenty minutes of quiet. That
     // is worth exactly one fresh sign-in and one replay: a correct password makes
     // no failed attempt, and a wrong one is already refused by login() for good.
-    if (replayed || passwordRefused) throw new ConsoleError(`console ${action}: ${why}`, 'auth', 401)
+    if (passwordRefused) throw new ConsoleError(`console ${action}: ${why}`, 'auth', 401)
+    if (replayed) {
+      // We signed in, the console said ok, and it still does not know us. The
+      // password is fine; the session is not sticking — a full or unwritable
+      // session directory on the host does exactly this. Stopping the worker over
+      // it would be wrong, because nobody can fix it by changing a password, and
+      // it usually clears on its own once the host is tidied up.
+      throw new ConsoleError(
+        `console ${action}: signed in, but the console did not keep the session (${why})`,
+        'retry', 401)
+    }
     cookie = null
     await login()
     return api(action, { method, params, body, replayed: true })
@@ -119,7 +167,28 @@ async function api(action, { method = 'GET', params = {}, body, replayed = false
 export async function login() {
   if (!BASE || !PASSWORD) throw new ConsoleError('CONSOLE_URL / CONSOLE_PASSWORD missing in .env', 'auth')
   if (passwordRefused) throw new ConsoleError(passwordRefused, 'auth')
+  const left = lockedUntil - Date.now()
+  if (left > 0) {
+    throw new ConsoleError(
+      `console login: sign-ins are locked for about ${Math.ceil(left / 60_000)} more minute(s)`,
+      'retry', 429)
+  }
   await api('login', { method: 'POST', body: { password: PASSWORD } })
+  // It let us in, so whatever the lock was about is over.
+  lockedUntil = 0
+}
+
+/** Is the console there at all? `me` is the cheapest thing it answers and it changes
+ *  nothing, so this is how "the host is gone" gets told apart from "the host would not
+ *  take that one row" — by asking, rather than by guessing from the shape of a silence.
+ *  Any answer at all, happy or not, means it is there. */
+export async function consoleAnswers() {
+  try {
+    await api('me')
+    return true
+  } catch (e) {
+    return !isUnreachable(e)
+  }
 }
 
 export async function ensureAuth() {
@@ -144,14 +213,16 @@ export async function allLeadsPage(limit, offset) {
   return api('leads', { params: { limit, offset } })
 }
 
-async function* pagesOf(fetchPage, pageSize) {
+async function* pagesOf(fetchPage, pageSize, status = {}) {
   const size = Math.min(pageSize, PAGE_MAX)
   let offset = 0, pages = 0
+  status.truncated = false
   for (;;) {
     const { total, leads } = await fetchPage(size, offset)
     if (!leads?.length) return
     yield leads
     offset += leads.length
+    status.rows = offset
     pages++
     if (offset >= Number(total ?? 0)) return
     // The console counts and lists in two queries, so a scrape finishing while we
@@ -159,6 +230,10 @@ async function* pagesOf(fetchPage, pageSize) {
     // This is a hard stop on that, and on a console grown too big to walk every
     // quarter of an hour — at which point it needs a way to ask about given ids.
     if (pages >= MAX_PAGES) {
+      // The caller has to know it only saw part of the list: concluding anything
+      // about the leads it never reached — that they are gone, say — would be
+      // wrong, and that conclusion would be about nearly all of them.
+      status.truncated = true
       console.error(`  console leads: stopped after ${MAX_PAGES} pages (${offset} rows of ${total}).`)
       return
     }
@@ -170,9 +245,11 @@ export async function* dialableLeads(pageSize = 500) {
   yield* pagesOf(leadsPage, pageSize)
 }
 
-/** Page through every lead the console holds. Yields arrays of rows. */
-export async function* allLeads(pageSize = PAGE_MAX) {
-  yield* pagesOf(allLeadsPage, pageSize)
+/** Page through every lead the console holds. Yields arrays of rows. `status` is
+ *  filled in as we go: `rows` is how many we read, and `truncated` says we gave up
+ *  before the end of the list. */
+export async function* allLeads(pageSize = PAGE_MAX, status = {}) {
+  yield* pagesOf(allLeadsPage, pageSize, status)
 }
 
 export async function setStatus(id, status, note) {

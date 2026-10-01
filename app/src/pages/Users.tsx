@@ -108,7 +108,11 @@ export default function Users({ me }: { me: string }) {
     setBusy(true)
     if (panel.kind === 'remove') {
       if (panel.handBack && holds(m) && !(await handBack(m, true))) { setBusy(false); return }
-      const { data, error: e } = await callAdmin<{ deleted?: boolean; removed?: boolean }>('remove', { user_id: m.id })
+      // The dialog has already told the manager which of the two this is, from the
+      // same counts the function checks, so say which one we meant: without it the
+      // function keeps the login every time and "Delete login" quietly blocks instead.
+      const { data, error: e } = await callAdmin<{ deleted?: boolean; removed?: boolean }>(
+        'remove', { user_id: m.id, keep_history: m.has_history })
       setBusy(false)
       if (e) { say(e); return }
       say(data?.deleted ? `${m.name}’s login is deleted` : `${m.name} is removed: their history stays in the reports`)
