@@ -15,6 +15,10 @@
 // references it; anyone with calls or records on file is removed instead: the
 // login is blocked and they are taken off the floor, and every report keeps their
 // history. Names, roles and on/off-the-floor go through the set_member RPC.
+//
+// Someone a manager adds here is on the floor the moment they are created, while
+// someone who signs themselves up on the public site stays off it until a manager
+// switches them on. "create" is the only thing that switches a brand-new login on.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -81,9 +85,26 @@ async function create(b: Record<string, unknown>) {
     email, password, email_confirm: true, user_metadata: { name },
   });
   if (error || !data.user) throw new Error(friendly(error?.message ?? "Could not create the login"));
-  // the signup trigger made their profile (as an agent); set what the form chose
-  const { error: pe } = await admin.from("profiles").update({ name, role }).eq("id", data.user.id);
-  if (pe) throw new Error(pe.message);
+  // The signup trigger made their profile, switched off, because sign-ups are open on
+  // this project and a stranger who signs up must wait for a manager. A manager adding
+  // someone here has already made that decision, so this is where active is turned on,
+  // next to the name and role the form chose. Asking for the row back tells us the
+  // profile really was there to set up.
+  const { data: profile, error: pe } = await admin.from("profiles")
+    .update({ name, role, active: true }).eq("id", data.user.id).select("id").maybeSingle();
+  // If that did not take, the login exists with a password nobody has seen and a profile
+  // nobody set, and it would answer the manager's next attempt with "that email already
+  // has a login" and no way forward. So undo it: then retrying is all they have to do.
+  if (pe || !profile) {
+    const why = pe?.message ?? "their profile was not there to set up";
+    const { error: de } = await admin.auth.admin.deleteUser(data.user.id);
+    if (de) {
+      throw new Error(`Could not finish the login for ${email} (${why}), and the half-finished login ` +
+        `could not be cleared away either (${de.message}). It still exists, so it has to be deleted in ` +
+        `Supabase before this email can be used again.`);
+    }
+    throw new Error(`Could not finish the login for ${email}, so nothing was created: ${why}. Try again.`);
+  }
   return { id: data.user.id, email, password: typed ? null : password };
 }
 
@@ -103,12 +124,27 @@ async function setEmail(id: string, e: unknown) {
   return { email };
 }
 
+/** Does member_history's answer mean this person has something on file? Any count above
+ *  zero does. So does an answer we cannot read as a set of plain counts — no object at
+ *  all, no keys, or a key holding something that is not a number — because the two
+ *  mistakes are not the same size: a wrong "nothing on file" deletes someone's records
+ *  for good, while a wrong "something on file" only leaves a blocked login that a
+ *  manager can delete later. Counting nothing is never an answer we act on. */
+function anythingOnFile(hist: unknown): boolean {
+  if (typeof hist !== "object" || hist === null || Array.isArray(hist)) return true;
+  const counts = Object.values(hist as Record<string, unknown>);
+  if (counts.length === 0) return true;
+  return counts.some((n) => typeof n !== "number" || n !== 0);
+}
+
 async function remove(me: string, id: string) {
   if (id === me) throw new Error("You can't remove yourself: ask another manager");
+  // member_history is also what team() shows the manager as has_history, so the warning
+  // in the dialog and what this does are always decided by the same count. An error here
+  // has to stop us: we would be guessing at whether there is anything to lose.
   const { data: hist, error: he } = await admin.rpc("member_history", { p_id: id });
   if (he) throw new Error(he.message);
-  const onFile = Object.values((hist ?? {}) as Record<string, number>).some((n) => Number(n) > 0);
-  if (!onFile) {
+  if (!anythingOnFile(hist)) {
     // nothing references them: clear what a session leaves behind, then delete the login
     await admin.from("lead_state").update({ reserved_by: null, reserved_until: null }).eq("reserved_by", id);
     await admin.from("agent_status").delete().eq("agent_id", id);

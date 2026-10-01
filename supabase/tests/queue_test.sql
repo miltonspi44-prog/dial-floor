@@ -10,6 +10,7 @@ insert into auth.users (id, email) values
   ('bbbbbbbb-0000-0000-0000-00000000000b', 'agent.b@test'),
   ('cccccccc-0000-0000-0000-00000000000c', 'manager@test');
 update profiles set role = 'manager' where id = 'cccccccc-0000-0000-0000-00000000000c';
+update profiles set active = true;  -- a manager turns a login on; the trigger now creates it off
 insert into leads (source_id, name, phone_norm, phone_display, addr_state, score, review_count) values
   (1, 'X',  '3055550001', '(305) 555-0001', 'FL', 95, 50),
   (2, 'Y',  '3055550002', '(305) 555-0002', 'FL', 90, 40),

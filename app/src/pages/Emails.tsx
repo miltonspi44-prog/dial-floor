@@ -21,6 +21,13 @@ interface TemplateDraft { id: number | null; name: string; subject: string; body
 // the editor's preview when nothing is waiting in the queue
 const SAMPLE = { business: 'Sample Plumbing Co', city: 'Tampa', state: 'FL', category: 'Plumber', website: '', agent: 'Ana' }
 
+// the waiting list and the history show the same row, so they read the same columns
+const COLUMNS = 'id, lead_id, email, status, template, flagged_by, created_at, sent_at,'
+  + ' leads(name, addr_city, addr_state, category, website), profiles!email_queue_flagged_by_fkey(name)'
+
+// how many finished emails the history shows before the manager asks for more
+const HISTORY_PAGE = 25
+
 function varsFor(r: EmailRow | null, myName: string): Record<string, string> {
   if (!r) return { ...SAMPLE, my_name: myName }
   return {
@@ -37,9 +44,15 @@ function varsFor(r: EmailRow | null, myName: string): Record<string, string> {
 /** G5: like your SMS ritual, but for email — the system queues, fills in a
  *  template and tracks; a human sends from their own mail client. */
 export default function Emails({ myName }: { myName: string }) {
-  const [rows, setRows] = useState<EmailRow[]>([])
+  const [waiting, setWaiting] = useState<EmailRow[]>([])
+  const [done, setDone] = useState<EmailRow[]>([])
+  const [doneTotal, setDoneTotal] = useState(0)
+  const [shown, setShown] = useState(HISTORY_PAGE) // rows of history asked for so far
+  const [fetched, setFetched] = useState<number | null>(null) // the history size the rows on screen came from
   const [asks, setAsks] = useState<Record<number, string>>({}) // queue id → the note on the call that queued it
   const [templates, setTemplates] = useState<EmailTemplate[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [tplError, setTplError] = useState<string | null>(null)
   const [openId, setOpenId] = useState<number | null>(null)
   const [draft, setDraft] = useState<Draft>({ templateId: null, subject: '', body: '' })
   const [edit, setEdit] = useState<TemplateDraft | null>(null)
@@ -51,41 +64,61 @@ export default function Emails({ myName }: { myName: string }) {
   }
 
   const refresh = useCallback(() => {
-    supabase.from('email_queue')
-      .select('id, lead_id, email, status, template, flagged_by, created_at, sent_at, leads(name, addr_city, addr_state, category, website), profiles!email_queue_flagged_by_fkey(name)')
-      .order('created_at', { ascending: false })
-      .limit(100)
-      .then(({ data }) => {
-        const list = (data ?? []) as unknown as EmailRow[]
-        setRows(list)
-        // what the lead asked for: the agent's note on the call that queued the email
-        const waiting = list.filter((r) => r.status === 'flagged')
-        if (!waiting.length) { setAsks({}); return }
-        supabase.from('attempts')
-          .select('lead_id, agent_id, note, clicked_at')
-          .eq('disposition', 'email_requested')
-          .in('lead_id', [...new Set(waiting.map((r) => r.lead_id))])
-          .order('clicked_at', { ascending: false })
-          .then(({ data: calls }) => {
-            const found: Record<number, string> = {}
-            for (const r of waiting) {
-              const call = (calls ?? []).find((c) => c.lead_id === r.lead_id && c.agent_id === r.flagged_by
-                && Date.parse(c.clicked_at) <= Date.parse(r.created_at))
-              if (call?.note) found[r.id] = call.note
-            }
-            setAsks(found)
-          })
-      })
-  }, [])
+    // The emails still waiting are the work, so every one of them comes down, no
+    // matter how many: a request that fell off the end of a page is an email a
+    // customer was promised and never got. The finished ones are only a record,
+    // so they stay capped and the manager asks for more when they want them.
+    // Oldest waiting first, because the one promised longest ago is the late one.
+    Promise.all([
+      supabase.from('email_queue').select(COLUMNS)
+        .eq('status', 'flagged')
+        .order('created_at'),
+      supabase.from('email_queue').select(COLUMNS, { count: 'exact' })
+        .neq('status', 'flagged')
+        .order('created_at', { ascending: false })
+        .range(0, shown - 1),
+    ]).then(([queue, past]) => {
+      setFetched(shown)
+      const failed = queue.error ?? past.error
+      if (failed) { setError(`The email queue did not load: ${failed.message}`); return }
+      setError(null)
+      const list = (queue.data ?? []) as unknown as EmailRow[]
+      setWaiting(list)
+      setDone((past.data ?? []) as unknown as EmailRow[])
+      setDoneTotal(past.count ?? 0)
+      if (!list.length) { setAsks({}); return }
+      // what the lead asked for: the agent's note on the call that queued the email
+      supabase.from('attempts')
+        .select('lead_id, agent_id, note, clicked_at')
+        .eq('disposition', 'email_requested')
+        .in('lead_id', [...new Set(list.map((r) => r.lead_id))])
+        .order('clicked_at', { ascending: false })
+        .then(({ data: calls, error: noteError }) => {
+          if (noteError) { setError(`The queue loaded, but what each lead asked for did not: ${noteError.message}`); return }
+          const found: Record<number, string> = {}
+          for (const r of list) {
+            const call = (calls ?? []).find((c) => c.lead_id === r.lead_id && c.agent_id === r.flagged_by
+              && Date.parse(c.clicked_at) <= Date.parse(r.created_at))
+            if (call?.note) found[r.id] = call.note
+          }
+          setAsks(found)
+        })
+    })
+  }, [shown])
 
   const loadTemplates = useCallback(() => {
     supabase.from('email_templates')
       .select('id, name, subject, body, active, sort')
       .order('sort').order('name')
-      .then(({ data }) => setTemplates((data ?? []) as EmailTemplate[]))
+      .then(({ data, error: e }) => {
+        if (e) { setTplError(`The templates did not load: ${e.message}`); return }
+        setTplError(null)
+        setTemplates((data ?? []) as EmailTemplate[])
+      })
   }, [])
 
-  useEffect(() => { refresh(); loadTemplates() }, [refresh, loadTemplates])
+  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => { loadTemplates() }, [loadTemplates])
 
   function copy(text: string, msg = 'Copied') {
     navigator.clipboard?.writeText(text).then(() => say(msg))
@@ -104,15 +137,18 @@ export default function Emails({ myName }: { myName: string }) {
   }
 
   async function mark(r: EmailRow, status: 'sent' | 'skipped') {
+    // Skipping throws the request away and the lead was promised an email, so ask first.
+    if (status === 'skipped' && !window.confirm(
+      `Skip the email to ${r.leads?.name ?? r.email}? The request leaves the queue, nothing is sent, and there is no undo.`)) return
     // the template is known only when it was written here
     const used = status === 'sent' && openId === r.id ? templates.find((t) => t.id === draft.templateId)?.name ?? null : null
-    const { error } = await supabase.from('email_queue').update({
+    const { error: e } = await supabase.from('email_queue').update({
       status,
       template: used,
       sent_by: (await supabase.auth.getUser()).data.user?.id,
       sent_at: status === 'sent' ? new Date().toISOString() : null,
     }).eq('id', r.id)
-    if (error) { say(error.message); return }
+    if (e) { say(e.message); return }
     if (openId === r.id) setOpenId(null)
     say(status === 'sent' ? 'Marked sent' : 'Skipped')
     refresh()
@@ -140,11 +176,12 @@ export default function Emails({ myName }: { myName: string }) {
     loadTemplates()
   }
 
-  const pending = rows.filter((r) => r.status === 'flagged')
-  const done = rows.filter((r) => r.status !== 'flagged')
+  // a request is in flight while the history on screen is a smaller page than the one asked for
+  const loading = fetched !== shown
+  const loaded = fetched !== null
   const active = templates.filter((t) => t.active)
   const leftover = /\{[a-z_]+\}/i.test(draft.subject + draft.body)
-  const previewRow = pending[0] ?? null
+  const previewRow = waiting[0] ?? null
   // placeholders the editor's text uses that nothing fills in (a typo, usually)
   const unknown = edit
     ? [...new Set([...`${edit.subject} ${edit.body}`.matchAll(/\{([a-z_]+)\}/gi)].map((m) => m[1].toLowerCase()))]
@@ -154,13 +191,20 @@ export default function Emails({ myName }: { myName: string }) {
 
   return (
     <div className="page">
-      <div className="sectionhead"><h3>Email queue</h3><span className="muted small">{pending.length} waiting · write it from a template, send it from your own mail app, then mark it sent</span></div>
+      <div className="sectionhead">
+        <h3>Email queue</h3>
+        <span className="muted small">
+          {!loaded ? 'counting…' : error ? 'how many are waiting is unknown' : `${waiting.length} waiting`}
+          {' '}· write it from a template, send it from your own mail app, then mark it sent
+        </span>
+      </div>
+      {error && <div className="card alertcard">{error}</div>}
       <div className="card">
         <div className="tablewrap">
           <table className="data">
             <thead><tr><th>Flagged</th><th>Lead</th><th>Email</th><th>By</th><th /></tr></thead>
             <tbody>
-              {pending.map((r) => (
+              {waiting.map((r) => (
                 <Fragment key={r.id}>
                   <tr>
                     <td>{new Date(r.created_at).toLocaleDateString()}</td>
@@ -209,7 +253,15 @@ export default function Emails({ myName }: { myName: string }) {
                   )}
                 </Fragment>
               ))}
-              {!pending.length && <tr><td colSpan={5} className="muted">Queue is clear.</td></tr>}
+              {!waiting.length && (
+                <tr>
+                  <td colSpan={5} className="muted">
+                    {!loaded ? 'Loading the queue…'
+                      : error ? 'The queue could not be read, so there is nothing to show here.'
+                        : 'Queue is clear.'}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -222,24 +274,27 @@ export default function Emails({ myName }: { myName: string }) {
           onClick={() => setEdit({ id: null, name: '', subject: '', body: '', active: true })}>New template</button>
       </div>
       <div className="card">
-        {templates.length ? (
-          <table className="data">
-            <tbody>
-              {templates.map((t) => (
-                <tr key={t.id}>
-                  <td>
-                    <b>{t.name}</b>{!t.active && <span className="tag" style={{ marginLeft: 8 }}>off</span>}
-                    <div className="muted small">{t.subject}</div>
-                  </td>
-                  <td className="rowactions">
-                    <button className="btn ghost"
-                      onClick={() => setEdit({ id: t.id, name: t.name, subject: t.subject, body: t.body, active: t.active })}>edit</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : <span className="muted small">No templates yet.</span>}
+        {tplError ? <span className="warnline">{tplError}</span>
+          : templates.length ? (
+            <div className="tablewrap">
+              <table className="data">
+                <tbody>
+                  {templates.map((t) => (
+                    <tr key={t.id}>
+                      <td>
+                        <b>{t.name}</b>{!t.active && <span className="tag" style={{ marginLeft: 8 }}>off</span>}
+                        <div className="muted small">{t.subject}</div>
+                      </td>
+                      <td className="rowactions">
+                        <button className="btn ghost"
+                          onClick={() => setEdit({ id: t.id, name: t.name, subject: t.subject, body: t.body, active: t.active })}>edit</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <span className="muted small">No templates yet.</span>}
       </div>
 
       {edit && (
@@ -275,10 +330,15 @@ export default function Emails({ myName }: { myName: string }) {
         </div>
       )}
 
-      {done.length > 0 && (
+      {doneTotal > 0 && (
         <>
-          <div className="sectionhead"><h3>History</h3></div>
-          <div className="card">
+          <div className="sectionhead">
+            <h3>History</h3>
+            <span className="muted small">
+              {done.length === doneTotal ? `all ${doneTotal}` : `the newest ${done.length} of ${doneTotal}`}, sent or skipped
+            </span>
+          </div>
+          <div className={`card ${loading ? 'stale' : ''}`}>
             <div className="tablewrap">
               <table className="data">
                 <thead><tr><th>Flagged</th><th>Lead</th><th>Email</th><th>Outcome</th><th>Template</th></tr></thead>
@@ -295,6 +355,13 @@ export default function Emails({ myName }: { myName: string }) {
                 </tbody>
               </table>
             </div>
+            {done.length < doneTotal && (
+              <div className="actionrow" style={{ marginTop: 10 }}>
+                <button className="btn" disabled={loading} onClick={() => setShown(shown + HISTORY_PAGE)}>
+                  {loading ? 'Loading…' : `Show ${Math.min(HISTORY_PAGE, doneTotal - done.length)} more`}
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
