@@ -432,6 +432,9 @@ select t.reset() \g /dev/null
 select t.dial('A', 'X') \g /dev/null
 update attempts set clicked_at = now() - interval '20 minutes';
 update lead_state set in_progress_since = now() - interval '20 minutes' where lead_id = t.lead('X');
+-- the tile has gone quiet too: push-back refuses a live call since 0032 (item 39),
+-- and a browser that died mid-call is exactly the case this scenario is about
+update agent_status set updated_at = now() - interval '6 minutes' where agent_id = t.uid('A');
 set role authenticated;
 do $$
 declare al jsonb;

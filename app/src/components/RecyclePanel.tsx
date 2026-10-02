@@ -151,7 +151,7 @@ export default function RecyclePanel() {
           </div>
         </>
       )}
-      {msg && pools && <div className="toast">{msg}</div>}
+      {msg && pools && <div className="toast" role="status">{msg}</div>}
     </>
   )
 }

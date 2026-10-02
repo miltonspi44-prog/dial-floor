@@ -82,6 +82,11 @@ export default function Users({ me }: { me: string }) {
   }
 
   async function handBack(m: TeamMember, quiet = false) {
+    // item 39: one tiny button used to strip every callback and list, silently
+    if (!quiet) {
+      const held = holds(m)
+      if (!window.confirm(`Hand back ${m.name}'s work?\n\n${held ? `They hold ${held}.` : 'Nothing looks held right now.'} Callbacks go back to the queue and their lists are shared with everyone.`)) return false
+    }
     const { data, error: e } = await supabase.rpc('release_member', { p_id: m.id })
     if (e) { say(e.message); return false }
     const r = data as { callbacks: number; lists: number }
@@ -324,7 +329,7 @@ export default function Users({ me }: { me: string }) {
         <>
           <div className="sectionhead"><h3>Removed</h3><span className="muted small">can’t sign in; their calls stay in every report</span></div>
           <div className="card">
-            <table className="data team">
+            <div className="tablewrap"><table className="data team">
               <tbody>
                 {removed.map((m) => (
                   <tr key={m.id} className="inactive">
@@ -335,14 +340,14 @@ export default function Users({ me }: { me: string }) {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           </div>
         </>
       )}
       <p className="muted small">
         A manager can’t remove, demote or take themselves off the floor, so there is always an active manager.
       </p>
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   )
 }

@@ -1,5 +1,13 @@
 # The lead sync worker
 
+> **Hosted since migration 0034 (focus item 48):** the same loop now runs inside
+> Supabase — the `sync-console` edge function, called by pg_cron (pushes every
+> minute, pulls every quarter hour). This PC loop keeps working and is the
+> fallback; don't run both at once for long (they share the one console session,
+> and the function's busy-lease treats any unfinished run as "in progress").
+> Setup lives in `supabase/functions/README.md`.
+
+
 This is the small Node program that keeps the dialer and the hosted lead console in
 step. It does two jobs, on two clocks:
 

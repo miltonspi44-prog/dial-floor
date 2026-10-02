@@ -1,6 +1,17 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Profile } from '../lib/types'
+
+interface ListLead {
+  lead_id: number
+  name: string
+  phone: string | null
+  city: string | null
+  state: string | null
+  lead_state: string
+  position: number
+  served_at: string | null
+}
 
 interface ListRow {
   id: number
@@ -65,6 +76,12 @@ export default function Lists() {
   const [reload, setReload] = useState(0) // bumped to ask the same question again after a change
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // item 38: one list opened up, its leads in hand
+  const [open, setOpen] = useState<number | null>(null)
+  const [items, setItems] = useState<ListLead[] | null>(null)
+  const [itemsErr, setItemsErr] = useState<string | null>(null)
+  const [addQ, setAddQ] = useState('')
+  const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
   const [form, setForm] = useState({ name: '', agent: '', state: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
 
   const query = `${filter.status}|${filter.kind}|${page}`
@@ -174,6 +191,55 @@ export default function Lists() {
     refresh()
   }
 
+  async function loadItems(listId: number) {
+    const { data, error: e } = await supabase.rpc('list_leads', { p_list: listId, p_limit: 500 })
+    if (e) { setItemsErr(e.message); setItems([]); return }
+    setItemsErr(null)
+    setItems((data ?? []) as ListLead[])
+  }
+
+  function toggleView(l: ListRow) {
+    if (open === l.id) { setOpen(null); setItems(null); return }
+    setOpen(l.id); setItems(null); setAddQ(''); setAddHits([])
+    loadItems(l.id)
+  }
+
+  // item 37: the per-list agent selector the Radar card keeps pointing at
+  async function reassign(l: ListRow, agent: string) {
+    const { error: e } = await supabase.rpc('set_list_agent', { p_list: l.id, p_agent: agent || null })
+    if (e) { setActionError(`“${l.name}” did not change hands: ${e.message}`); return }
+    setActionError(null)
+    refresh()
+  }
+
+  // item 38: hand-pick a lead onto the open list
+  async function searchLeads(q: string) {
+    setAddQ(q)
+    const digits = q.replace(/\D/g, '')
+    if (q.trim().length < 2) { setAddHits([]); return }
+    let query = supabase.from('leads').select('id, name, phone_display, addr_city, addr_state').limit(8)
+    query = digits.length >= 4 ? query.like('phone_norm', `%${digits}%`) : query.ilike('name', `%${q.trim()}%`)
+    const { data } = await query
+    setAddHits((data ?? []) as typeof addHits)
+  }
+
+  async function addLead(leadId: number) {
+    if (!open) return
+    const { error: e } = await supabase.rpc('list_add_lead', { p_list: open, p_lead: leadId })
+    if (e) { setItemsErr(e.message); return }
+    setItemsErr(null)
+    setAddQ(''); setAddHits([])
+    loadItems(open); refresh()
+  }
+
+  async function removeLead(leadId: number) {
+    if (!open) return
+    const { error: e } = await supabase.rpc('list_remove_lead', { p_list: open, p_lead: leadId })
+    if (e) { setItemsErr(e.message); return }
+    setItemsErr(null)
+    loadItems(open); refresh()
+  }
+
   const from = total ? page * PAGE + 1 : 0
   const to = page * PAGE + lists.length
 
@@ -232,18 +298,73 @@ export default function Lists() {
             <thead><tr><th>Name</th><th>Date</th><th>Agent</th><th>Burn-down</th><th>Status</th><th /></tr></thead>
             <tbody>
               {lists.map((l) => (
+                <Fragment key={l.id}>
                 <tr key={l.id}>
                   <td>{l.name}{l.kind !== 'manual' && <span className="tag" style={{ marginLeft: 8 }}>{l.kind}</span>}</td>
                   <td>{l.list_date}</td>
-                  <td>{l.profiles?.name ?? '—'}</td>
+                  <td>
+                    {l.status === 'active' || l.status === 'draft' ? (
+                      <select value={l.agent_id ?? ''} aria-label={`Agent for ${l.name}`}
+                        onChange={(e) => reassign(l, e.target.value)}>
+                        <option value="">— shared —</option>
+                        {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    ) : (l.profiles?.name ?? '—')}
+                  </td>
                   <td>{tally(l.served)}/{tally(l.total)}</td>
                   <td>{statusWord(l.status)}</td>
                   <td className="rowactions">
+                    <button className="btn ghost" onClick={() => toggleView(l)}>{open === l.id ? 'hide' : 'view'}</button>
                     {l.status === 'active' ? <button className="btn ghost" onClick={() => setStatus(l, 'done')}>close</button>
                       : l.status === 'archived' ? <span className="muted">—</span>
                         : <button className="btn ghost" onClick={() => setStatus(l, 'archived')}>archive</button>}
                   </td>
                 </tr>
+                {open === l.id && (
+                  <tr className="listdetail">
+                    <td colSpan={6}>
+                      {itemsErr && <div className="warnline">{itemsErr}</div>}
+                      {!items ? <span className="muted small">Loading the leads…</span> : (
+                        <>
+                          {(l.status === 'active' || l.status === 'draft') && (
+                            <div className="actionrow" style={{ position: 'relative', flexWrap: 'wrap' }}>
+                              <input placeholder="add a lead: name or number…" value={addQ} style={{ minWidth: 220 }}
+                                aria-label="Find a lead to add" onChange={(e) => searchLeads(e.target.value)} />
+                              {addHits.map((h) => (
+                                <button key={h.id} className="btn small" onClick={() => addLead(h.id)}>
+                                  + {h.name}{h.addr_city ? ` · ${h.addr_city}, ${h.addr_state}` : ''}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {items.length ? (
+                            <div className="tablewrap"><table className="data">
+                              <thead><tr><th>#</th><th>Lead</th><th>Where</th><th>Phone</th><th>State</th><th>Served</th><th /></tr></thead>
+                              <tbody>
+                                {items.map((it) => (
+                                  <tr key={it.lead_id}>
+                                    <td>{it.position}</td>
+                                    <td>{it.name}</td>
+                                    <td>{[it.city, it.state].filter(Boolean).join(', ') || '—'}</td>
+                                    <td>{it.phone ?? '—'}</td>
+                                    <td>{it.lead_state}</td>
+                                    <td>{it.served_at ? new Date(it.served_at).toLocaleDateString() : '—'}</td>
+                                    <td className="rowactions">
+                                      {(l.status === 'active' || l.status === 'draft') && !it.served_at && (
+                                        <button className="btn ghost small" onClick={() => removeLead(it.lead_id)}>remove</button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table></div>
+                          ) : <span className="muted small">Nothing on this list.</span>}
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
               {!lists.length && (
                 <tr>

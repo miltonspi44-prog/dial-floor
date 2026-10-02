@@ -1,16 +1,7 @@
 \set ON_ERROR_STOP 1
 set client_min_messages = warning;
 
--- direct attempt rows: these tests are about counting, not the queue machine
-create or replace function t.att(p text, lead text, dispo text, p_connected boolean,
-                                 p_dur int default null, p_result text default null,
-                                 p_when timestamptz default now()) returns bigint
-language sql as $$
-  insert into attempts (lead_id, agent_id, clicked_at, disposition, connected, duration_seconds,
-                        call_result, matched, disposed_at, auto_logged)
-  values (t.lead(lead), t.uid(p), p_when, dispo, p_connected, p_dur,
-          p_result, p_result is not null, case when dispo is not null then p_when end, false)
-  returning id $$;
+-- (t.att lives in the harness, queue_test.sql)
 
 \echo '39.1 · One meaning of conversation, one of talk time, and no dials Zoom never placed (items 15–17)'
 select t.reset() \g /dev/null

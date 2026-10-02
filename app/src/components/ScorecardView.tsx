@@ -78,11 +78,15 @@ export default function ScorecardView({ agent }: { agent: string }) {
   const cur = sc.weeks[sc.weeks.length - 1]
 
   return (
-    <div className={`scorecard ${key !== agent ? 'stale' : ''}`}>
+    <div className={`scorecard ${key !== agent ? 'stale' : ''}`} data-print-root="scorecard">
       <div className="sectionhead">
         <h3>{sc.agent?.name ?? 'Scorecard'} · week of {new Date(`${sc.this_week}T12:00:00`).toLocaleDateString([], { month: 'long', day: 'numeric' })}</h3>
         <span className="muted small">the floor = the average agent who dialed that week; rates are the floor's overall</span>
-        <button className="btn small noprint" style={{ marginLeft: 'auto' }} onClick={() => window.print()}>Print</button>
+        <button className="btn small noprint" style={{ marginLeft: 'auto' }} onClick={() => {
+          document.body.classList.add('print-scorecard')
+          window.print()
+          document.body.classList.remove('print-scorecard')
+        }}>Print</button>
       </div>
       <div className="card">
         <div className="tablewrap">

@@ -1,10 +1,10 @@
 // Pull dialable leads from the hosted console into the dialing DB.
 // Every NEWLY imported lead is marked `contacted` in the console, so the
 // scraper's permanent suppression stops it from ever re-exporting elsewhere.
-import { ensureAuth, dialableLeads, allLeads, markContacted } from './lib/console.mjs'
+import { ensureAuth, dialableLeads, allLeads, markContacted } from './console.mjs'
 import {
   supa, upsertLeads, heldSourceIds, statesOf, suppressLead, leadIdsBySourceId, logRun,
-} from './lib/supa.mjs'
+} from './supa.mjs'
 
 // How many console rows go into one upsert. Small enough that the "which of these
 // do we already have" lookup stays a short URL, big enough to not be chatty.
@@ -216,7 +216,6 @@ async function marksOnly() {
 // file is a library and globalThis.process is nobody, so the guard stays false.
 const argv1 = globalThis.process?.argv?.[1]
 if (argv1 && import.meta.url === `file://${argv1.replace(/\\/g, '/')}`) {
-  await import('./lib/client-node.mjs')
   logRun('pull_leads', process.argv[2] === '--marks-only' ? marksOnly : pull)
     .then((n) => { console.log(`pull done: ${n} leads`); process.exit(0) })
     .catch((e) => { console.error(e); process.exit(1) })

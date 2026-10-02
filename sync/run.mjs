@@ -1,6 +1,7 @@
 // Long-running mode: pull every PULL_INTERVAL_MIN (default 15), push every minute.
 // Run it on any always-on PC:  npm run loop
 // (or via Task Scheduler — sync/README.md has the step-by-step)
+import './lib/client-node.mjs'
 import { pull } from './pull-leads.mjs'
 import { push } from './push-status.mjs'
 import { logRun } from './lib/supa.mjs'

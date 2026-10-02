@@ -38,6 +38,7 @@ export default function LeaderboardCard({ today, sprint, me, isManager, onChange
   }
 
   async function end() {
+    if (!window.confirm('End the power hour now? The standings freeze where they are.')) return
     setBusy(true)
     const { error } = await supabase.rpc('end_sprint')
     setBusy(false)

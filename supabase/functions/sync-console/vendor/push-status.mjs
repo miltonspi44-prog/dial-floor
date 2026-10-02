@@ -4,8 +4,8 @@
 // leads.db through its existing channel — the scraper project stays untouched.
 import {
   ensureAuth, setStatus, consoleAnswers, isAuthFailure, isRejected, isUnreachable,
-} from './lib/console.mjs'
-import { supa, logRun } from './lib/supa.mjs'
+} from './console.mjs'
+import { supa, logRun } from './supa.mjs'
 
 // How many statuses one run takes on. Every one of them is attempted every run,
 // including the ones that failed last time: a status that never goes over is a
@@ -261,7 +261,6 @@ function refusedNote(note, why) {
 // file is a library and globalThis.process is nobody, so the guard stays false.
 const argv1 = globalThis.process?.argv?.[1]
 if (argv1 && import.meta.url === `file://${argv1.replace(/\\/g, '/')}`) {
-  await import('./lib/client-node.mjs')
   logRun('push_status', push)
     .then((n) => { console.log(`push done: ${n} statuses`); process.exit(0) })
     .catch((e) => { console.error(e); process.exit(1) })

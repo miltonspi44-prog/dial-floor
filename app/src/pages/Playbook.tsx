@@ -38,7 +38,7 @@ export default function Playbook() {
       {section === 'cards' && <Cards say={say} />}
       {section === 'lab' && <Lab say={say} />}
       {section === 'library' && <Library say={say} />}
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   )
 }
@@ -76,6 +76,17 @@ function Cards({ say }: { say: (m: string) => void }) {
 
   async function remove() {
     if (!edit?.id) return
+    const used = (stats.get(edit.id)?.calls ?? 0) > 0
+    if (used) {
+      // item 39: taps are coaching history; the card retires instead of taking them down
+      if (!window.confirm(`Archive “${edit.objection}”? Calls stop seeing it; every tap it ever got stays in the stats and the call logs.`)) return
+      const { error } = await supabase.from('battlecards').update({ active: false }).eq('id', edit.id)
+      if (error) { say(error.message); return }
+      setEdit(null)
+      say('Battlecard archived — its history stays')
+      load()
+      return
+    }
     if (!window.confirm(`Delete “${edit.objection}”? It has never been tapped, so no history is lost.`)) return
     const { error } = await supabase.from('battlecards').delete().eq('id', edit.id)
     if (error) { say(error.message); return }

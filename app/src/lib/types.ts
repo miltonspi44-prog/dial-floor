@@ -380,6 +380,41 @@ export interface Sprint {
   /** present only on a dead heat: the tied rows (winner is null then) */
   winners?: SprintRow[]
 }
+/** floor_board(): the whole Floor page in one call (item 42). */
+export interface FloorBoard {
+  tiles: FloorRow[]
+  pace: PaceRow[]
+  alerts: FloorAlert[]
+  leaderboard: Leaderboard | null
+  sprint: Sprint | null
+  callbacks: { id: number; lead_id: number; lead: string; phone: string | null; tz: string | null; agent: string; due_at: string; tries: number }[] | null
+  recent: unknown[] | null
+  health: NumberHealthRow[] | null
+}
+
+/** v_number_health, as floor_board and the Settings page read it. */
+export interface NumberHealthRow {
+  number: string
+  dials_7d: number | null
+  connects_7d: number | null
+  rate_7d: number | null
+  rate_prev_7d: number | null
+  dials_prev_7d: number | null
+}
+
+/** settings_all(): the whitelisted registry with current values (item 36). */
+export interface SettingRow {
+  key: string
+  kind: 'int' | 'num' | 'bool' | 'tz' | 'window' | 'window_days' | 'json'
+  grp: string
+  label: string
+  help?: string
+  min?: number
+  max?: number
+  def: unknown
+  value: unknown
+}
+
 /** floor_pulse(): what the Dial page checks once a minute. */
 export interface Pulse { sprint: Sprint | null; wins: FloorAlert[] }
 

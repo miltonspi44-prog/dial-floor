@@ -460,3 +460,21 @@ table.data tr.thin .minibar i { opacity: 0.45; }
   .page { padding: 0; max-width: none; }
   .card { box-shadow: none; break-inside: avoid; }
 }
+
+
+/* ---- Wave 4 ---- */
+/* item 54: the new-version banner under the nav */
+.updatebar { background: var(--accent-soft, #eef); color: inherit; padding: 8px 16px; display: flex; gap: 10px; align-items: center; font-size: 14px; }
+/* item 43: hub tabs sit flush under the nav */
+.hubtabs { margin: 12px 16px 0; }
+/* item 38: the opened list's detail row */
+.listdetail > td { background: var(--chip, #f6f7f9); }
+/* item 47: Print on a scorecard prints the scorecard alone */
+@media print {
+  body.print-scorecard .topnav,
+  body.print-scorecard .updatebar,
+  body.print-scorecard .rangebar,
+  body.print-scorecard .noprint { display: none !important; }
+  body.print-scorecard .page > *:not(:has([data-print-root="scorecard"])):not([data-print-root]) { display: none; }
+  body.print-scorecard [data-print-root="scorecard"] { display: block; }
+}

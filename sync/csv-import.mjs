@@ -1,6 +1,7 @@
 // Fallback importer: load a CSV exported from the console ("Export CSV")
 // straight into the dialing DB — works before the API sync is configured.
 //   npm run import -- path\to\leads-2026-09-23.csv --mark-contacted
+import './lib/client-node.mjs'
 import { readFileSync } from 'node:fs'
 import { upsertLeads, logRun } from './lib/supa.mjs'
 

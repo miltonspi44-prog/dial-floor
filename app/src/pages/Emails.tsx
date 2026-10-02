@@ -456,7 +456,7 @@ export default function Emails({ myName }: { myName: string }) {
           </div>
         </>
       )}
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status">{toast}</div>}
     </div>
   )
 }

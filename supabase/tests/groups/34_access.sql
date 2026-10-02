@@ -204,14 +204,11 @@ begin
 end $$;
 
 \echo '  · the queue reads lists as the function''s owner, not as the agent'
--- 0023 leaves lists and list_items readable by any switched-on login. Narrowing
--- them to the agent's own lists would break group 23, where an agent deliberately
--- reads another agent's radar list, and that file is not this migration's to
--- change. So this block is not a guard on a shipped policy: it is the proof that
--- next_lead() never reads lists as the agent, so whoever does narrow them later
--- will not stop the queue by doing it. It puts both policies back exactly as it
--- found them, and then checks that it did — so whoever narrows the policy has to
--- change the two restores below to match, and the check is what will tell them.
+-- 0032 (item 44) made lists and list_items manager-only, exactly the narrowing
+-- this block was written to prove safe: next_lead() reads lists as the function's
+-- owner, never as the agent, so the queue keeps serving. The flip below is now a
+-- re-statement of the shipped policy rather than an experiment, and the restore
+-- puts back what 0032 ships.
 select set_config('t.lists_read',
   (select string_agg(polname || ' = ' || pg_get_expr(polqual, polrelid), '; ' order by polname) from pg_policy
     where polrelid in ('public.lists'::regclass, 'public.list_items'::regclass) and polcmd = 'r'), false) \g /dev/null
@@ -232,15 +229,15 @@ begin
 end $$;
 reset role;
 drop policy lists_read on public.lists;
-create policy lists_read on public.lists for select to authenticated using (public.is_active());
+create policy lists_read on public.lists for select to authenticated using (public.is_manager());
 drop policy list_items_read on public.list_items;
-create policy list_items_read on public.list_items for select to authenticated using (public.is_active());
+create policy list_items_read on public.list_items for select to authenticated using (public.is_manager());
 do $$
 begin
   assert current_setting('t.lists_read') =
     (select string_agg(polname || ' = ' || pg_get_expr(polqual, polrelid), '; ' order by polname) from pg_policy
       where polrelid in ('public.lists'::regclass, 'public.list_items'::regclass) and polcmd = 'r'),
-    'both policies are back exactly as 0023 leaves them, so the groups after this one see what they expect';
+    'both policies are back exactly as 0032 leaves them, so the groups after this one see what they expect';
 end $$;
 
 \echo '  · the helpers that were open to anyone'

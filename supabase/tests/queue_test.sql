@@ -50,10 +50,21 @@ begin
   end;
   raise exception 'expected "%" from [%], but it succeeded', expect, stmt;
 end $$;
+-- direct attempt rows, for tests about counting rather than the queue machine
+create function t.att(p text, lead text, dispo text, p_connected boolean,
+                      p_dur int default null, p_result text default null,
+                      p_when timestamptz default now()) returns bigint
+language sql as $$
+  insert into attempts (lead_id, agent_id, clicked_at, disposition, connected, duration_seconds,
+                        call_result, matched, disposed_at, auto_logged)
+  values (t.lead(lead), t.uid(p), p_when, dispo, p_connected, p_dur,
+          p_result, p_result is not null, case when dispo is not null then p_when end, false)
+  returning id $$;
 create function t.reset() returns void language plpgsql as $$
 begin
   truncate attempts, callbacks, suppression, lists, list_items, handoff_ledger, email_queue,
-           agent_status, card_taps, number_stats, agent_breaks, sprints, call_votes, referrals restart identity cascade;
+           agent_status, card_taps, number_stats, agent_breaks, sprints, call_votes, referrals,
+           streak_cache restart identity cascade;
   update lead_state set state = 'queued', owner_agent = null, rest_until = null, attempts_total = 0,
     attempts_today = 0, attempts_today_date = null, connects_total = 0, last_attempt_at = null,
     in_progress_since = null, reserved_by = null, reserved_until = null,
@@ -729,6 +740,9 @@ set role authenticated;
 do $$
 declare r jsonb; la bigint; lb bigint; n jsonb;
 begin
+  -- lists read manager-only since 0032 (item 44): the counts below are the
+  -- test's own bookkeeping, so they read outside row-level security
+  perform set_config('role', 'postgres', true);
   perform t.as_user('A');
   r := public.radar_daily();
   assert (r->>'ran')::boolean and (r->>'lists')::int = 2, format('the first page of the day deals each active agent a list: %s', r);
@@ -761,6 +775,7 @@ update app_settings set value = jsonb_set(value, '{date}', to_jsonb((business_da
 set role authenticated;
 do $$
 begin
+  perform set_config('role', 'postgres', true);  -- same bookkeeping reads as above
   perform t.as_user('B');
   assert (public.radar_daily()->>'ran')::boolean, 'a new day, a new deal';
   assert (select count(*) from lists where kind = 'radar' and status = 'done') = 2, 'yesterday''s radar lists are closed';
@@ -871,6 +886,8 @@ begin
   assert (r->>'callbacks')::int = 1 and (r->>'lists')::int = 1, format('handed back: %s', r);
   assert (select status = 'requeued' from callbacks where lead_id = t.lead('X')), 'the callback is back in the queue';
   assert (select state = 'queued' and owner_agent is null from lead_state where lead_id = t.lead('X')), 'and so is its lead';
+  -- lists read manager-only since 0032: the test's own bookkeeping reads outside RLS
+  perform set_config('role', 'postgres', true);
   assert (select agent_id is null and status = 'active' from lists where name = 'A''s list'), 'the list is shared with everyone';
 end $$;
 reset role;
@@ -1034,6 +1051,8 @@ begin
   assert (r->>'recycled')::int = 1 and (r->>'listed')::int = 1, format('recycled: %s', r);
   assert (select state from lead_state where lead_id = t.lead('X')) = 'queued', 'X is back in the queue';
   assert exists (select 1 from lead_intents where lead_id = t.lead('X') and intent_key = 'provider_winback'), 'as a win-back';
+  -- lists read manager-only since 0032: the test's own bookkeeping reads outside RLS
+  perform set_config('role', 'postgres', true);
   assert (select kind = 'recycle' and agent_id is null from lists where id = (r->>'list_id')::bigint), 'on a shared list';
   assert (select state from lead_state where lead_id = t.lead('Z')) = 'provider_list', 'Z (40 days) stays parked';
 
@@ -1262,6 +1281,8 @@ begin
             and phone_display = '(305) 555-7777' from leads where id = v), 'a dialer-only lead in the referrer''s area';
   assert (select state from lead_state where lead_id = v) = 'queued';
   assert exists (select 1 from lead_intents where lead_id = v and intent_key = 'warm_referral'), 'marked warm';
+  -- lists read manager-only since 0032: the test's own bookkeeping reads outside RLS
+  perform set_config('role', 'postgres', true);
   assert (select kind = 'referrals' and agent_id = t.uid('A') from lists where id = (r->>'list_id')::bigint), 'on A''s own Referrals list';
   n := t.log('A', att, 'not_interested_soft');
   assert t.name(n->'next') = 'Mike''s Gutters' and n->'next'->>'reason' = 'list', format('the referral is next: %s', t.name(n->'next'));

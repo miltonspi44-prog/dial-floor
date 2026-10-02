@@ -129,6 +129,18 @@ async function create(b: Record<string, unknown>) {
   return { id: data.user.id, email, password: typed ? null : password };
 }
 
+/** Item 52: a manager's login is their own. One manager could quietly take over
+ *  another's account by resetting its password (or re-pointing its email), and
+ *  nothing in the ledger would say who did it. Your own login, and any agent's,
+ *  stay fair game — that is what the button is for. */
+async function guardPeer(me: string, id: string, what: string) {
+  if (id === me) return;
+  const { data } = await admin.from("profiles").select("role").eq("id", id).maybeSingle();
+  if (data?.role === "manager") {
+    throw new Error(`Another manager's login is theirs alone — they ${what} themselves.`);
+  }
+}
+
 async function resetPassword(id: string, p: unknown) {
   const typed = typedPassword(p);
   const password = typed ?? newPassword();
@@ -253,8 +265,12 @@ Deno.serve(async (req) => {
   try {
     switch (body.action) {
       case "create": return json(200, await create(body));
-      case "reset_password": return json(200, await resetPassword(id, body.password));
-      case "set_email": return json(200, await setEmail(id, body.email));
+      case "reset_password":
+        await guardPeer(me, id, "reset their password");
+        return json(200, await resetPassword(id, body.password));
+      case "set_email":
+        await guardPeer(me, id, "change their email");
+        return json(200, await setEmail(id, body.email));
       // The login may be deleted only when keep_history is exactly false. Missing, or holding
       // anything else, means the login is blocked and kept, which is the answer that can be
       // undone — and the answer every caller gets until it says otherwise in those words.
