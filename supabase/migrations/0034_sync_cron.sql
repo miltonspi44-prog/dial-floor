@@ -24,7 +24,9 @@ begin
     return;
   end if;
   execute 'create extension if not exists pg_cron';
-  execute 'create extension if not exists pg_net';
+  -- schema named at install: pg_net is not relocatable, and without this it
+  -- lands in public, where the security advisor rightly complains about it
+  execute 'create extension if not exists pg_net schema extensions';
 
   begin
     execute $q$select exists (select 1 from vault.decrypted_secrets where name = 'sync_cron_secret')$q$
