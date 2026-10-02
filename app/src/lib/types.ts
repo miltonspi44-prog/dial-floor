@@ -431,13 +431,13 @@ export function talkTime(sec: number | null | undefined): string {
 }
 
 /** Popup dispositions: only shown when a human answered. */
-export const CONNECTED_DISPOSITIONS: { key: string; code: string; label: string; hint?: string; needs?: 'callback' | 'email' | 'handoff' }[] = [
+export const CONNECTED_DISPOSITIONS: { key: string; code: string; label: string; hint?: string; needs?: 'callback' | 'email' | 'handoff' | 'retry' }[] = [
   { key: '1', code: 'wrong_number',        label: 'Wrong number',            hint: 'kills + re-enriches' },
   { key: '2', code: 'gatekeeper_end',      label: 'Gatekeeper — ended' },
   { key: '3', code: 'not_interested_soft', label: 'Not interested — soft',   hint: '10-day rest' },
   { key: '4', code: 'not_interested_hard', label: 'Not interested — hard',   hint: '20-day rest' },
   { key: '5', code: 'has_provider',        label: 'Already has provider',    hint: 'provider list' },
-  { key: '6', code: 'dm_not_in',           label: 'Decision maker not in' },
+  { key: '6', code: 'dm_not_in',           label: 'Decision maker not in', needs: 'retry' },
   { key: '7', code: 'callback',            label: 'Callback scheduled',      needs: 'callback' },
   { key: '8', code: 'email_requested',     label: 'Email requested',         needs: 'email' },
   { key: '9', code: 'language_barrier',    label: 'Language barrier' },

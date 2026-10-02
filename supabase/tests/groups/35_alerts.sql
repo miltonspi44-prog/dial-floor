@@ -107,6 +107,17 @@ end $$;
 reset role;
 
 \echo '35 · Item 9 · pace stops at the last sign of life; behind pace leaves the gone and the finished alone'
+-- These fixtures write a working day of dials into the hours behind now(), and
+-- floor_pace only counts from the business day's start — so run at 7am Pacific,
+-- an "8 hours ago" dial lands yesterday and vanishes. Pin the business clock to
+-- a zone where it is already afternoon, whatever the wall clock here says; for
+-- any UTC hour, one of these three is past 09:00 local. Put back at the end.
+insert into app_settings (key, value)
+select 'business_tz', to_jsonb(z)
+  from (values ('UTC'), ('Asia/Tokyo'), ('America/Los_Angeles')) v(z)
+ where extract(hour from now() at time zone z) >= 9
+ limit 1
+on conflict (key) do update set value = excluded.value;
 select t.reset() \g /dev/null
 -- A dialed from three hours ago until two hours ago and the tile went quiet 90
 -- minutes ago: an hour and a half of work, not the three hours now() would make it.
@@ -215,6 +226,8 @@ begin
     format('nobody is behind pace at home: %s', al);
 end $$;
 reset role;
+-- the remaining fixtures stay inside three hours, which the pinned afternoon
+-- zone also covers; the pin comes off at the end of this file
 -- A pause someone started and never ended is a sign of life of its own: they told
 -- the app they were stepping away. Without it a lunch taken after the browser went
 -- quiet got clipped to nothing, so the strip read "paused 0 min" in the middle of
@@ -526,3 +539,6 @@ end $$;
 reset role;
 select t.reset() \g /dev/null
 \echo 'alerts tests passed'
+
+-- the business clock goes back to its default
+delete from app_settings where key = 'business_tz';

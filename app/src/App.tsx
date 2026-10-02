@@ -80,7 +80,11 @@ export default function App() {
         </nav>
         <div className="userbox">
           <span>{profile?.name ?? '…'}{isManager ? ' · manager' : ''}</span>
-          <button className="btn ghost" onClick={() => supabase.auth.signOut()}>Sign out</button>
+          <button className="btn ghost" onClick={async () => {
+            // the tile goes offline now, not five quiet minutes from now
+            try { await supabase.rpc('heartbeat', { p_status: 'offline' }) } catch { /* signing out anyway */ }
+            supabase.auth.signOut()
+          }}>Sign out</button>
         </div>
       </header>
       <Routes>

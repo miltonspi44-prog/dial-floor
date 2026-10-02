@@ -20,8 +20,10 @@ export default function Login() {
       <form className="loginbox card" onSubmit={submit}>
         <h1>Dial Floor</h1>
         <p className="muted small" style={{ margin: 0 }}>Sign in with the account your manager created for you.</p>
-        <input type="email" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
-        <input type="password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        <label htmlFor="login-email" className="small" style={{ fontWeight: 600 }}>Email</label>
+        <input id="login-email" type="email" autoComplete="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
+        <label htmlFor="login-password" className="small" style={{ fontWeight: 600 }}>Password</label>
+        <input id="login-password" type="password" autoComplete="current-password" placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         {err && <div className="small" style={{ color: 'var(--bad)' }}>{err}</div>}
         <button className="btn primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
       </form>

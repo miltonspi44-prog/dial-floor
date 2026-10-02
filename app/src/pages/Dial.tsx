@@ -8,6 +8,20 @@ import SprintBanner from '../components/SprintBanner'
 
 type Phase = 'loading' | 'ready' | 'dialing' | 'empty' | 'paused'
 
+/** What the webhook writes on the attempt; the page listens for it (item 26). */
+type AttemptLite = {
+  id?: number
+  disposition: string | null
+  auto_logged: boolean
+  call_result: string | null
+  duration_seconds: number | null
+}
+
+type MyCb = { due_at: string; tries: number; leads: { name: string; tz: string | null } | null }
+
+/** An outcome the connection dropped waits here and is sent on the next load (item 34). */
+const PENDING_KEY = 'df-pending-outcome'
+
 const REASON_LABEL: Record<string, string> = {
   callback_due: 'CALLBACK DUE — they asked for this call',
   list: 'From your list',
@@ -88,10 +102,15 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   // E5 + E4: the race and the bell; C6: the best-time model
   const [pulse, setPulse] = useState<Pulse | null>(null)
   const [best, setBest] = useState<BestTimes | null>(null)
+  // 26: the call's end, straight from Zoom
+  const [endedSec, setEndedSec] = useState<number | null>(null)
+  // 29: the agent's own scheduled callbacks, in one glance
+  const [myCbs, setMyCbs] = useState<MyCb[]>([])
   const timerRef = useRef<number | null>(null)
   const toastRef = useRef<number | null>(null)
   const wrapIdleSent = useRef(false)
   const seenWins = useRef<Set<string> | null>(null)
+  const autoHandled = useRef<number | null>(null)
 
   const lead = ws?.lead
 
@@ -118,7 +137,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   }, [])
 
   const applyResult = useCallback((res: NextLeadResult | null) => {
-    setPopup(false); setVmAsk(false); stopTimer()
+    setPopup(false); setVmAsk(false); setEndedSec(null); stopTimer()
     setWs(res)
     if (!res || res.empty || res.error || !res.lead) {
       setAttemptId(null); setPhase('empty')
@@ -136,19 +155,45 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     setWrapAt(null)
     const { data, error } = await supabase.rpc('next_lead')
     if (error) { setToastMsg(error.message); setPhase('empty'); return }
-    applyResult(data as NextLeadResult)
+    const res = data as NextLeadResult
+    applyResult(res)
+    // the tile tells the truth: a mid-call reload says on_call, not idle (item 32)
+    supabase.rpc('heartbeat', { p_status: res?.attempt_id ? 'on_call' : 'idle' }).then(() => {})
   }, [applyResult])
 
+  const refreshCbs = useCallback(() => {
+    if (!profile?.id) { setMyCbs([]); return }
+    supabase.from('callbacks').select('due_at, tries, leads(name, tz)')
+      .eq('agent_id', profile.id).eq('status', 'scheduled')
+      .order('due_at').limit(6)
+      .then(({ data }) => setMyCbs((data ?? []) as unknown as MyCb[]))
+  }, [profile?.id])
+
   useEffect(() => {
-    // a pause survives a reload: come back to it rather than to a lead
-    supabase.rpc('my_pace').then(({ data }) => {
-      const p = data as Pace | null
-      if (p) setPace(p)
-      if (p?.break) { setPhase('paused'); return }
-      supabase.rpc('heartbeat', { p_status: 'idle' }).then(() => {})
-      // the first Dial page of the business day runs the radar (it deals the
-      // morning lists), so it goes before the first lead; later pages return at once
-      supabase.rpc('radar_daily').then(() => loadNext())
+    // an outcome the connection dropped goes first (item 34): the queue must hear
+    // how the call went before it decides what to serve
+    let stash: { attemptId: number; code: string; args: Record<string, unknown> } | null = null
+    try { const raw = localStorage.getItem(PENDING_KEY); if (raw) stash = JSON.parse(raw) } catch { stash = null }
+    const sent = stash
+      ? supabase.rpc('log_disposition', { p_attempt_id: stash.attemptId, p_dispo: stash.code, p_args: stash.args })
+          .then(({ error }) => {
+            if (!error || /already|not found|not your/i.test(error.message)) {
+              try { localStorage.removeItem(PENDING_KEY) } catch { /* ignore */ }
+              if (!error) setToastMsg('The outcome from before the connection dropped is saved.')
+            }
+          })
+      : Promise.resolve()
+    sent.then(() => {
+      // a pause survives a reload: come back to it rather than to a lead
+      supabase.rpc('my_pace').then(({ data }) => {
+        const p = data as Pace | null
+        if (p) setPace(p)
+        if (p?.break) { setPhase('paused'); return }
+        // the first Dial page of the business day runs the radar (it deals the
+        // morning lists), so it goes before the first lead; later pages return at once.
+        // loadNext reports the honest status itself: on_call on a resume, else idle.
+        supabase.rpc('radar_daily').then(() => loadNext())
+      })
     })
   }, [loadNext])
 
@@ -156,6 +201,11 @@ export default function Dial({ profile }: { profile: Profile | null }) {
     loadTargets().then(setTargets)
     supabase.rpc('best_times').then(({ data }) => { if (data) setBest(data as BestTimes) })
   }, [])
+
+  useEffect(() => { refreshCbs() }, [refreshCbs])
+
+  // leaving the page stops the call clock with it (item 35)
+  useEffect(() => () => { if (timerRef.current) window.clearInterval(timerRef.current) }, [])
 
   // the race, the bell and the pace rates, once a minute
   useEffect(() => {
@@ -181,6 +231,52 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       supabase.rpc('heartbeat', { p_status: 'idle' }).then(() => {})
     }
   }, [wrapLeft])
+
+  // 26: Zoom's result lands on the attempt within seconds of the call ending.
+  // The page listens and moves by itself: a no-answer advances with no keystroke,
+  // a pickup opens the outcome popup the moment the call ends. The handler lives
+  // on a ref so the channel subscribes once per call, not once per render; a slow
+  // poll backs the socket up when realtime drops.
+  const attemptEventRef = useRef<(row: AttemptLite) => void>(() => {})
+  attemptEventRef.current = (row) => {
+    if (!attemptId || (row.id != null && row.id !== attemptId)) return
+    if (autoHandled.current === attemptId) return
+    if (row.disposition && !row.auto_logged && row.disposition !== 'not_placed') {
+      // settled elsewhere (a manager relogged it, another tab): nothing left here
+      autoHandled.current = attemptId
+      setToastMsg('This call was logged elsewhere - moving on.')
+      loadNext()
+      return
+    }
+    if (row.auto_logged && row.disposition === 'no_answer' && !popup && !vmAsk) {
+      autoHandled.current = attemptId
+      setToastMsg('Zoom: no answer - moving on.')
+      log('no_answer')
+      return
+    }
+    if (row.call_result === 'answered' && !popup && !vmAsk) {
+      autoHandled.current = attemptId
+      setEndedSec(row.duration_seconds ?? null)
+      setPopup(true)
+    }
+  }
+
+  useEffect(() => {
+    if (phase !== 'dialing' || !attemptId) return
+    autoHandled.current = null
+    const ch = supabase.channel(`attempt-${attemptId}`)
+      .on('postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'attempts', filter: `id=eq.${attemptId}` },
+          (p) => attemptEventRef.current(p.new as AttemptLite))
+      .subscribe()
+    const iv = window.setInterval(async () => {
+      const { data } = await supabase.from('attempts')
+        .select('id, disposition, auto_logged, call_result, duration_seconds')
+        .eq('id', attemptId).maybeSingle()
+      if (data) attemptEventRef.current(data as AttemptLite)
+    }, 8000)
+    return () => { supabase.removeChannel(ch); window.clearInterval(iv) }
+  }, [phase, attemptId])
 
   function stopTimer() {
     if (timerRef.current) { window.clearInterval(timerRef.current); timerRef.current = null }
@@ -213,8 +309,19 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       p_attempt_id: attemptId, p_dispo: code, p_args: args,
     })
     setBusy(false)
-    if (error) { setToastMsg(error.message); return }
+    if (error) {
+      // the connection went, not the call: keep the outcome on this device and
+      // it goes first thing on the next load (item 34)
+      if (/fetch|network|load failed/i.test(error.message)) {
+        try { localStorage.setItem(PENDING_KEY, JSON.stringify({ attemptId, code, args })) } catch { /* full/blocked */ }
+        setToastMsg('No connection - the outcome is saved on this device and goes out when the page reconnects.', 7000)
+      } else {
+        setToastMsg(error.message)
+      }
+      return
+    }
     refreshPace()
+    refreshCbs()
     const next = (data as { next: NextLeadResult }).next
     applyResult(next)
     // wrap-up: a visible countdown before the next dial. It never dials by itself
@@ -268,6 +375,8 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   // global keys (popup handles its own while open)
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // a held key is one keystroke, not a stream of them (item 27)
+      if (e.repeat) return
       if (popup) return
       const target = e.target as HTMLElement
       const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
@@ -288,7 +397,8 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       if (typing) return
       const k = e.key.toUpperCase()
       if (phase === 'ready') {
-        if (k === 'D' || e.key === 'Enter') { e.preventDefault(); dial() }
+        // D only: Enter used to dial the next lead unseen when held through a save (item 27)
+        if (k === 'D') { e.preventDefault(); dial() }
         if (k === 'S') { e.preventDefault(); skip() }
         if (k === 'P') { e.preventDefault(); openPause() }
       } else if (phase === 'dialing') {
@@ -348,6 +458,25 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       </div>
 
       {pulse?.sprint && <SprintBanner sprint={pulse.sprint} me={profile?.id ?? null} compact />}
+
+      {myCbs.length > 0 && (phase === 'ready' || phase === 'empty') && (
+        <div className="card" style={{ padding: '8px 14px', marginBottom: 12 }}>
+          <span className="kpilabel">My callbacks</span>{' '}
+          <span className="small">
+            {myCbs.map((c, i) => {
+              const due = Date.parse(c.due_at) <= Date.now()
+              return (
+                <span key={`${c.due_at}-${i}`} className="muted">
+                  {i > 0 ? ' · ' : ''}
+                  <b>{c.leads?.name ?? 'lead'}</b>{' '}
+                  {due ? <span style={{ color: 'var(--bad)' }}>due now</span>
+                       : `${theirTime(c.due_at, c.leads?.tz ?? null)} their time`}
+                </span>
+              )
+            })}
+          </span>
+        </div>
+      )}
 
       {pauseOpen && (
         <div className="card pausepanel">
@@ -535,11 +664,12 @@ export default function Dial({ profile }: { profile: Profile | null }) {
           attemptId={attemptId}
           city={lead.addr_city}
           state={lead.addr_state}
+          endedSec={endedSec}
           onPick={(code, args) => log(code, args)}
-          onClose={() => setPopup(false)}
+          onClose={() => { setPopup(false); setEndedSec(null) }}
         />
       )}
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className={popup ? 'toast top' : 'toast'}>{toast}</div>}
     </div>
   )
 }

@@ -36,7 +36,8 @@ export default function Battlecards({ attemptId, agentId }: Props) {
   function tapObjection(card: Battlecard) {
     const next = open === card.id ? null : card.id
     setOpen(next)
-    if (next && agentId) {
+    // reading a card between calls is studying, not an objection heard on a call
+    if (next && agentId && attemptId) {
       supabase.from('card_taps').insert({ attempt_id: attemptId, card_id: card.id, agent_id: agentId }).then(() => {})
     }
   }
