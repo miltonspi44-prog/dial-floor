@@ -341,9 +341,8 @@ async function onCallEnded(type: string, obj: any, firstDelivery: boolean): Prom
   //
   // It runs on every call-ended delivery rather than only on the deliveries that
   // could race, because working out which of those a delivery is takes an
-  // argument about arrival orders and this takes a query. attempts has no index
-  // on zoom_call_id yet, so the query is a scan of the table; a scan is worth
-  // paying for to keep one call off two dials until that index lands.
+  // argument about arrival orders and this takes a query — an indexed one, now
+  // that 0026 gave zoom_call_id its own partial index.
   let alreadyAttached = false;
   if (callId) {
     const { data: prior, error: priorErr } = await supa.from("attempts")
