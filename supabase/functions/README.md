@@ -32,7 +32,21 @@ loop (`npm run loop`) and this function run the same files. Before deploying
 `sync-console`, run `bash sync/vendor-to-function.sh` — it copies the current
 passes into `supabase/functions/sync-console/vendor/`, which is what the bundle
 can see. The copies are committed so a diff shows exactly what ships.
+`index.ts` and `refusal.mjs` are the function's own files, not copies; the
+deploy carries all eight (both of them plus the six in `vendor/`).
 
-Scale note: one pull walks the console's whole list (3 pages today). If the
-console ever grows past what fits in an edge function's clock (~150s), move the
-pull back to the PC loop or page it across invocations.
+What the hosted run adds on top of the PC loop:
+- A push with nothing waiting answers `idle` without logging a run (cron asks
+  every minute; 1,440 empty rows a day would say nothing).
+- A password the console refuses is remembered across instances: the failed
+  run's detail carries a fingerprint (an HMAC keyed with `CRON_SECRET`), and
+  every instance checks for it before signing in. The same password is tried
+  again at most once a day; a changed `CONSOLE_PASSWORD` is tried at once.
+- Logs are trimmed nightly by migration 0035: seven days of pg_cron's run
+  history, 90 days of `sync_runs`.
+
+Scale note: one pull walks the console's whole list (4 pages at ~3,000 leads).
+The first hosted pull, a four-day catch-up that brought in 602 new leads and
+refreshed 2,247 more, took 89 s; the edge function's clock is 150 s. If pulls
+ever approach that, move the pull back to the PC loop or page it across
+invocations.

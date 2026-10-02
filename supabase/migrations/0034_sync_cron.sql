@@ -44,6 +44,9 @@ begin
   perform cron.unschedule(jobid) from cron.job
     where jobname in ('dial-floor push', 'dial-floor pull', 'dial-floor morning radar');
 
+  -- Each request waits as long as an edge function may run (150 s): a pull
+  -- outlives a shorter wait and still finishes, but its answer would read as a
+  -- timeout. sync_runs is the record either way.
   perform cron.schedule('dial-floor push', '* * * * *', format($job$
     select net.http_post(
       url := %L,
@@ -51,7 +54,7 @@ begin
         'content-type', 'application/json',
         'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'sync_cron_secret')),
       body := '{"task":"push"}'::jsonb,
-      timeout_milliseconds := 50000)
+      timeout_milliseconds := 150000)
   $job$, v_url));
 
   perform cron.schedule('dial-floor pull', '*/15 * * * *', format($job$
@@ -61,7 +64,7 @@ begin
         'content-type', 'application/json',
         'x-cron-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'sync_cron_secret')),
       body := '{"task":"pull"}'::jsonb,
-      timeout_milliseconds := 50000)
+      timeout_milliseconds := 150000)
   $job$, v_url));
 
   -- 49: the radar deals the day on a clock instead of off the first page load.
