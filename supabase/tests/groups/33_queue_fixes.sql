@@ -125,8 +125,9 @@ declare att bigint; n jsonb;
 begin
   att := t.dial('B', 'X');
   perform t.log('B', att, 'not_interested_hard');
-  assert (select status = 'missed' from callbacks where lead_id = t.lead('X')),
-    format('A''s promise is closed, got %s', (select status from callbacks where lead_id = t.lead('X')));
+  assert (select status = 'cancelled' from callbacks where lead_id = t.lead('X')),
+    format('A''s promise is cancelled by the park, not missed by A, got %s',
+           (select status from callbacks where lead_id = t.lead('X')));
   n := t.next('A');
   assert t.name(n) is distinct from 'X',
     format('and A is not served a resting lead, got %s (%s)', t.name(n), n->>'reason');
@@ -161,7 +162,9 @@ select t.reset() \g /dev/null
 do $$
 declare att bigint;
 begin
-  -- nobody comes back for this one
+  -- nobody comes back for this one, and Zoom never wrote a thing: no match, no
+  -- call id, no result. That is a click whose call never rang anywhere (item 17),
+  -- so it is closed as not placed and everything the click charged comes back.
   att := t.dial('A', 'X');
   update attempts set clicked_at = now() - interval '3 hours' where id = att;
   update lead_state set in_progress_since = now() - interval '3 hours',
@@ -173,8 +176,13 @@ begin
   perform t.next('B');
   assert (select state = 'queued' and owner_agent is null and in_progress_since is null
             from lead_state where lead_id = t.lead('X')), 'the stranded lead is back in the queue';
-  assert (select disposition = 'no_answer' and auto_logged and disposed_at is not null
-            from attempts where id = att), 'and the call is recorded as a no-answer';
+  assert (select disposition = 'not_placed' and not auto_logged and disposed_at is not null
+            from attempts where id = att),
+    format('a call Zoom never saw is closed as not placed, got %s',
+           (select disposition from attempts where id = att));
+  assert (select attempts_today = 0 and attempts_total = 0 and last_attempt_at is null
+            from lead_state where lead_id = t.lead('X')),
+    'and the cap, the gap and the totals get the click back';
   assert (select status = 'idle' and lead_id is null from agent_status where agent_id = t.uid('A')),
     'A is not shown dialing a lead that is back in the queue';
   assert (select updated_at < now() - interval '2 hours' from agent_status where agent_id = t.uid('A')),
@@ -189,9 +197,12 @@ begin
   perform t.log('A', att, 'callback', jsonb_build_object('due_at', now() + interval '1 minute'));
   perform t.next('A');
   att := t.dial('A', 'X');
-  -- the abandoned call is three hours old, and the call that promised the callback older still
+  -- the abandoned call is three hours old, and the call that promised the callback older
+  -- still. Zoom did place this one — its result is on the row, only the outcome write
+  -- was lost — so the sweep finishes it as a no-answer rather than a not-placed.
   update attempts set clicked_at = now() - interval '4 hours' where lead_id = t.lead('X') and id <> att;
-  update attempts set clicked_at = now() - interval '3 hours' where id = att;
+  update attempts set clicked_at = now() - interval '3 hours',
+      call_result = 'not_answered', matched = true where id = att;
   update lead_state set in_progress_since = now() - interval '3 hours',
       last_attempt_at = now() - interval '3 hours' where lead_id = t.lead('X');
   -- the tab is gone, so it stopped pinging: that is what tells the sweep it is dead
@@ -345,8 +356,11 @@ declare a1 bigint; a2 bigint;
 begin
   -- Two agents on the two records of one business at once. The console keeps one status
   -- per record, so what it is told about the record that was sold must not be replaced
-  -- by the wrong number found on the other one a moment later.
+  -- by the wrong number found on the other one a moment later. The per-business redial
+  -- gap now stops two clicks landing together (group 38), so the second call starts
+  -- after a cleared gap — both are still open when the outcomes land.
   a1 := t.dial('A', 'D1');
+  update lead_state set last_attempt_at = now() - interval '3 hours' where lead_id = t.lead('D1');
   a2 := t.dial('B', 'D2');
   perform t.log('A', a1, 'sale_closed', '{"summary":"sold - seo","rating":5}');
   perform t.log('B', a2, 'wrong_number');
@@ -363,8 +377,9 @@ do $$
 declare a1 bigint; a2 bigint;
 begin
   -- the other way round: do-not-call is the most final thing the console can be told,
-  -- so it goes over a sale on the twin
+  -- so it goes over a sale on the twin (same gap-clearing as above)
   a1 := t.dial('A', 'D1');
+  update lead_state set last_attempt_at = now() - interval '3 hours' where lead_id = t.lead('D1');
   a2 := t.dial('B', 'D2');
   perform t.log('A', a1, 'sale_closed', '{"summary":"sold - seo","rating":5}');
   perform t.log('B', a2, 'dnc', '{"note":"asked us to stop"}');
@@ -510,8 +525,11 @@ do $$
 declare other bigint;
 begin
   -- a call stranded by a dead tab, so the sweep inside next_lead has work to do
+  -- (one Zoom really placed, so the sweep's auto-log — where the slow trigger
+  -- sits — is the branch it takes, not the not-placed close)
   other := t.dial('B', 'Y');
-  update attempts set clicked_at = now() - interval '3 hours' where id = other;
+  update attempts set clicked_at = now() - interval '3 hours',
+      call_result = 'not_answered', matched = true where id = other;
   update lead_state set in_progress_since = now() - interval '3 hours',
       last_attempt_at = now() - interval '3 hours' where lead_id = t.lead('Y');
   -- B's tab is the one that died, so it is B's pings that stopped

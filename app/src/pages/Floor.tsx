@@ -55,7 +55,7 @@ export default function Floor({ isManager, me }: { isManager: boolean; me: strin
   const [numbers, setNumbers] = useState<NumberRow[]>([])
   const [callbacks, setCallbacks] = useState<CallbackRow[]>([])
   const [calls, setCalls] = useState<RecentCall[]>([])
-  const [targets, setTargets] = useState<Targets>({ dials: null, connects: null, handoffs: null })
+  const [targets, setTargets] = useState<Targets>({ dials: null, conversations: null, handoffs: null })
   const [dropPts, setDropPts] = useState(10)
   const [aiOn, setAiOn] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -189,7 +189,7 @@ export default function Floor({ isManager, me }: { isManager: boolean; me: strin
               )}
               <div className="tilecounts">
                 <Count value={r.dials_today} target={targets.dials} label="dials" />
-                <Count value={r.connects_today} target={targets.connects} label="connects" />
+                <Count value={r.conversations_today} target={targets.conversations} label="conversations" />
                 <Count value={r.handoffs_today} target={targets.handoffs} label="handoffs" />
                 <span><b>{r.emails_today}</b>emails</span>
               </div>

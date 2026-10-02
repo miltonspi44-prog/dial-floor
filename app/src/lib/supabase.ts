@@ -38,7 +38,7 @@ export async function loadTargets(): Promise<Targets> {
   const t = new Map((data ?? []).map((r) => [r.metric as string, Number(r.target)]))
   return {
     dials: t.get('dials_per_day') ?? null,
-    connects: t.get('connects_per_day') ?? null,
+    conversations: t.get('conversations_per_day') ?? null,
     handoffs: t.get('handoffs_per_day') ?? null,
   }
 }

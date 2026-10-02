@@ -336,7 +336,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
       <div className="actionrow" style={{ marginBottom: 12 }}>
         <div className="statchips">
           <Stat label="Dials" value={pace?.dials ?? 0} target={targets?.dials} />
-          <Stat label="Connects" value={pace?.connects ?? 0} target={targets?.connects} />
+          <Stat label="Conversations" value={pace?.conversations ?? 0} target={targets?.conversations} />
           <Stat label="Handoffs" value={pace?.handoffs ?? 0} target={targets?.handoffs} />
           <PaceChips pace={pace} />
         </div>

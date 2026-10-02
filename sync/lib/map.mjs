@@ -46,6 +46,18 @@ const REFRESH_INPUTS = [
 export function mapLead(row) {
   let extras = row.extras
   if (typeof extras === 'string') { try { extras = JSON.parse(extras) } catch { extras = null } }
+  // "Paying for ads" and "Badge holder" (item 19): the console sends sponsored
+  // and yelp_guaranteed as their own columns, while the intent rules read
+  // extras.sponsored and extras.guaranteed — so the two intents could never
+  // fire. Only a value the console actually sent lands here; a missing column
+  // must not erase a flag already sitting in extras.
+  const sponsored = blank(row.sponsored)
+  const guaranteed = blank(row.yelp_guaranteed)
+  if (sponsored != null || guaranteed != null) {
+    extras = { ...(extras ?? {}) }
+    if (sponsored != null) extras.sponsored = sponsored
+    if (guaranteed != null) extras.guaranteed = guaranteed
+  }
   const phone = normPhone(row.phone)
   if (phone.length !== 10) return null
   const category = blank(row.category)

@@ -69,8 +69,8 @@ export default function Funnel() {
   const [data, setData] = useState<FunnelData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [targets, setTargets] = useState<Targets>({ dials: null, connects: null, handoffs: null })
-  const [draft, setDraft] = useState({ dials: '', connects: '', handoffs: '' })
+  const [targets, setTargets] = useState<Targets>({ dials: null, conversations: null, handoffs: null })
+  const [draft, setDraft] = useState({ dials: '', conversations: '', handoffs: '' })
   // A4: the shift the dial target is spread over, and the wrap-up countdown
   const [pacing, setPacing] = useState({ shift: '8', wrap: '20' })
   const [saved, setSaved] = useState<string | null>(null)
@@ -96,7 +96,7 @@ export default function Funnel() {
   useEffect(() => {
     loadTargets().then((t) => {
       setTargets(t)
-      setDraft({ dials: String(t.dials ?? ''), connects: String(t.connects ?? ''), handoffs: String(t.handoffs ?? '') })
+      setDraft({ dials: String(t.dials ?? ''), conversations: String(t.conversations ?? ''), handoffs: String(t.handoffs ?? '') })
     })
     supabase.from('app_settings').select('key, value').in('key', ['shift_hours', 'wrapup_seconds']).then(({ data }) => {
       const v = new Map((data ?? []).map((r) => [r.key as string, String(r.value)]))
@@ -105,7 +105,7 @@ export default function Funnel() {
   }, [])
 
   async function saveTargets() {
-    const rows = ([['dials_per_day', draft.dials], ['connects_per_day', draft.connects], ['handoffs_per_day', draft.handoffs]] as const)
+    const rows = ([['dials_per_day', draft.dials], ['conversations_per_day', draft.conversations], ['handoffs_per_day', draft.handoffs]] as const)
       .filter(([, v]) => v.trim() !== '' && Number(v) >= 0)
       .map(([metric, v]) => ({ metric, target: Number(v), scope: 'agent_day', updated_at: new Date().toISOString() }))
     const now = new Date().toISOString()
@@ -174,7 +174,9 @@ export default function Funnel() {
               ) : <div className="muted small">No dials in this range yet.</div>}
               <p className="muted small" style={{ marginBottom: 0 }}>
                 Picked up = Zoom says the call was answered (a person, voicemail or an auto-attendant), or the agent
-                logged a live conversation. Conversations = the agent logged a live-person outcome. Handoffs = chance given / sale closed.
+                logged a live person. Conversations = a live person past the gatekeeper — a gatekeeper stop or a wrong
+                number is a connect, not a conversation. Handoffs = chance given / sale closed. Every screen counts these
+                the same way, and the daily target below is conversations.
               </p>
             </div>
 
@@ -189,7 +191,7 @@ export default function Funnel() {
                         <td>{a.name}</td>
                         <CountCells r={a} />
                         <td className="num">{perDay(a.dials, a.days)}{targets.dials ? <span className="muted"> / {targets.dials}</span> : null}</td>
-                        <td className="num">{perDay(a.conversations, a.days)}{targets.connects ? <span className="muted"> / {targets.connects}</span> : null}</td>
+                        <td className="num">{perDay(a.conversations, a.days)}{targets.conversations ? <span className="muted"> / {targets.conversations}</span> : null}</td>
                         <td className="num">{perDay(a.handoffs, a.days)}{targets.handoffs ? <span className="muted"> / {targets.handoffs}</span> : null}</td>
                       </tr>
                     ))}
@@ -262,7 +264,7 @@ export default function Funnel() {
       <div className="card">
         <div className="formrow">
           <label>Dials<input type="number" style={{ width: 110 }} min={0} value={draft.dials} onChange={(e) => setDraft({ ...draft, dials: e.target.value })} /></label>
-          <label>Conversations<input type="number" style={{ width: 110 }} min={0} value={draft.connects} onChange={(e) => setDraft({ ...draft, connects: e.target.value })} /></label>
+          <label>Conversations<input type="number" style={{ width: 110 }} min={0} value={draft.conversations} onChange={(e) => setDraft({ ...draft, conversations: e.target.value })} /></label>
           <label>Handoffs<input type="number" style={{ width: 110 }} min={0} value={draft.handoffs} onChange={(e) => setDraft({ ...draft, handoffs: e.target.value })} /></label>
           <label>Shift (hours)<input type="number" style={{ width: 90 }} min={1} max={16} value={pacing.shift} onChange={(e) => setPacing({ ...pacing, shift: e.target.value })} /></label>
           <label>Wrap-up (seconds)<input type="number" style={{ width: 100 }} min={0} max={300} value={pacing.wrap} onChange={(e) => setPacing({ ...pacing, wrap: e.target.value })} /></label>

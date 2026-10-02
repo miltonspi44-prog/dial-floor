@@ -134,7 +134,8 @@ begin
       update callbacks set due_at = now() - interval '1 minute';
     end if;
   end loop;
-  assert (select status = 'missed' and tries = 3 from callbacks), 'the third miss closes the callback';
+  assert (select status = 'unreached' and tries = 3 from callbacks),
+    'three tries and no pickup closes the callback as unreached (the lead''s doing, not the agent''s)';
   assert (select state = 'queued' and owner_agent is null from lead_state where lead_id = t.lead('X')), 'back in the queue';
 end $$;
 select t.reset() \g /dev/null

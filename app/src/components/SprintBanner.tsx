@@ -20,7 +20,10 @@ export default function SprintBanner({ sprint, me, compact = false }: { sprint: 
   const unit = sprint.metric === 'dials' ? 'dials' : 'conversations'
   const race = sprint.goal ? `first to ${sprint.goal} ${unit}` : `most ${unit}`
   const status = sprint.running ? minutesLeft(sprint.ends_at, now) : 'finished'
-  const winner = sprint.winner
+  const tie = !sprint.winner && (sprint.winners?.length ?? 0) > 1 ? sprint.winners! : null
+  const winner = tie
+    ? `Dead heat — ${tie.map((r) => (r.agent_id === me ? 'you' : r.name)).join(' & ')} with ${tie[0].count}`
+    : sprint.winner
     ? `${sprint.winner.agent_id === me ? 'You' : sprint.winner.name} ${sprint.running ? 'got there first' : 'won'} with ${sprint.winner.count}`
     : sprint.running ? null : 'nobody scored'
   const lead = Math.max(1, ...sprint.rows.map((r) => r.count))

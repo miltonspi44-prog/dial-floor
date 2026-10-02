@@ -104,6 +104,7 @@ export interface FloorRow {
   since: string | null
   dials_today: number
   connects_today: number
+  conversations_today: number
   handoffs_today: number
   emails_today: number
   /** Last heartbeat/ping; after 5 quiet minutes the view reports the agent offline. */
@@ -123,7 +124,7 @@ export interface FunnelCounts {
 export interface FunnelData {
   from: string
   days: number
-  totals: FunnelCounts & { callbacks: number; emails: number; talk_seconds: number }
+  totals: FunnelCounts & { connects: number; callbacks: number; emails: number; talk_seconds: number }
   by_agent: (FunnelCounts & { agent_id: string; name: string; days: number; talk_seconds: number })[]
   by_source: (FunnelCounts & { source: 'callback' | 'list' | 'pool' | 'untracked'; list: string | null })[]
   by_intent: (FunnelCounts & { intent: string; label: string })[]
@@ -160,7 +161,7 @@ export interface Digest {
   days: number
   me: DigestAgg
   floor: DigestAgg
-  targets: { dials: number | null; connects: number | null; handoffs: number | null }
+  targets: { dials: number | null; conversations: number | null; handoffs: number | null }
   metrics: { key: string; value: number | null; reference: number | null; ratio: number | null; ok: boolean }[]
   strengths: string[]
   fix: string | null
@@ -198,7 +199,7 @@ export interface RadarData {
 /** Daily per-agent targets from kpi_targets (F4). */
 export interface Targets {
   dials: number | null
-  connects: number | null
+  conversations: number | null
   handoffs: number | null
 }
 
@@ -376,6 +377,8 @@ export interface Sprint {
   running: boolean
   rows: SprintRow[]
   winner: SprintRow | null
+  /** present only on a dead heat: the tied rows (winner is null then) */
+  winners?: SprintRow[]
 }
 /** floor_pulse(): what the Dial page checks once a minute. */
 export interface Pulse { sprint: Sprint | null; wins: FloorAlert[] }
