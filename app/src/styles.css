@@ -478,3 +478,9 @@ table.data tr.thin .minibar i { opacity: 0.45; }
   body.print-scorecard .page > *:not(:has([data-print-root="scorecard"])):not([data-print-root]) { display: none; }
   body.print-scorecard [data-print-root="scorecard"] { display: block; }
 }
+
+/* ---------- Wave 5: the sync on the board and on the Settings page ---------- */
+.alertkind.sync { background: var(--bad-bg); color: var(--bad); }
+.synccard .statchips { margin-bottom: 8px; }
+.synccard .chip b { font-weight: 700; }
+.synccard .runs td.detail { max-width: 520px; white-space: normal; }

@@ -202,3 +202,28 @@ prints.
 | `lib/console.mjs` | The console client: session, lockout rules, paging. |
 | `lib/supa.mjs` | Everything written to the dialing DB, and which leads need recomputing. |
 | `lib/map.mjs` | Console rows → dialer rows, and what counts as a real change. |
+
+## What a pull counts, and what it writes
+
+Every quarter of an hour the refresh pass looks at every lead the console still
+lists. Three different questions are asked of each row (`lib/map.mjs`):
+
+- **Is anything different at all?** Then the row is written, so what is on file
+  matches the console to the byte. A row that is the same is left alone — on a
+  quiet quarter hour that is the whole table, and it used to be twelve thousand
+  identical row writes a pass.
+- **Is it news?** The run's `rows` counts only changes about the business. The
+  scraper's own bookkeeping in `extras` (`scraped_at`, `card_seen`, `page`)
+  moves every time it looks at a business again, and is not news: in eleven
+  days it accounted for nearly all of 46,000 "changes" on 12,000 leads.
+- **Does the queue need to recompute it?** `refresh_lead()` is one round trip
+  per lead, so it runs only when something it reads moved: the number and
+  state (timezone), the phone and website type, the platform, the categories,
+  the rating and review count, `first_seen`, and the two `extras` flags it
+  reads for intents (`sponsored`, `guaranteed`).
+
+`synced_at` on a lead is therefore when the row was last *written*, not when
+the console last listed it. `added_at` is when the lead first arrived here;
+`first_seen` is the console's own clock (when the business was scraped).
+
+Tests: `npm test` (node's own runner, nothing to install).

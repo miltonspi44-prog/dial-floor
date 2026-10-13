@@ -32,7 +32,7 @@ export async function pull() {
     news += r.changed
     unusable.push(...r.unusable)
     for (const id of r.ids.keys()) pulled.add(id)
-    console.log(`  looked at ${r.upserted} (new: ${r.imported.length}, changed: ${r.changed})`)
+    console.log(`  looked at ${r.looked} (new: ${r.imported.length}, changed: ${r.changed}, written: ${r.upserted})`)
   }
   // Before looking at what the console says about older leads, finish telling it
   // about these ones: that mark is what stops the scraper exporting them again.
@@ -107,7 +107,7 @@ export async function refreshImported(skipIds = new Set()) {
 
   const census = {}
   const seen = new Set()
-  let looked = 0, written = 0, refreshed = 0
+  let looked = 0, written = 0, refreshed = 0, stored = 0
   const unusable = []
   const excluded = []
   for await (const page of allLeads(undefined, census)) {
@@ -132,8 +132,9 @@ export async function refreshImported(skipIds = new Set()) {
     for (let i = 0; i < ours.length; i += WRITE_BATCH) {
       const slice = ours.slice(i, i + WRITE_BATCH)
       const r = await upsertLeads(slice, { markPending: false })
-      looked += r.upserted
+      looked += r.looked
       written += r.changed
+      stored += r.upserted
       refreshed += r.refreshed
       unusable.push(...r.unusable)
     }
@@ -167,7 +168,7 @@ export async function refreshImported(skipIds = new Set()) {
       + ' list may have moved under us while we read it.')
   }
   console.log(`  looked at ${looked} of ${seen.size} already-imported leads the console still lists:`
-    + ` ${written} changed, ${refreshed} requeued`)
+    + ` ${written} changed, ${stored} written, ${refreshed} requeued`)
   for (const note of notes) console.log(`  ${note}`)
   return { written, detail: notes.join(' ') || null }
 }

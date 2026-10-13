@@ -305,7 +305,7 @@ export interface PaceRow {
 /** floor_alerts() (E4). Keys are stable, so a notification fires once per event. */
 export interface FloorAlert {
   key: string
-  kind: 'win' | 'idle' | 'long_call' | 'pace' | 'callback' | 'spam'
+  kind: 'win' | 'idle' | 'long_call' | 'pace' | 'callback' | 'spam' | 'sync' | 'console' | 'outside'
   level: 'good' | 'warn'
   agent: string | null
   title: string
@@ -320,6 +320,53 @@ export interface AlertSettings {
   callback_overdue_minutes: number
   celebrate: boolean
   spam: boolean
+  /** Wave 5: the sync quiet for this long (it pulls every 15 min); 0 = off */
+  sync_quiet_minutes: number
+  /** no new lead from the console for this many days; 0 = off */
+  console_quiet_days: number
+  /** calls placed straight from Zoom today, outside the dialer */
+  outside_calls: boolean
+}
+
+/** sync_health() (Wave 5): the lead sync as the Settings page shows it. */
+export interface SyncRunRow {
+  id: number
+  kind: 'pull_leads' | 'push_status' | 'csv_import'
+  at: string
+  ok: boolean | null
+  rows: number
+  secs: number | null
+  detail: string | null
+}
+export interface SyncHealth {
+  now: string
+  pull: {
+    last_ok: { at: string; rows: number; secs: number | null; detail: string | null } | null
+    last: { at: string; ok: boolean | null; rows: number; finished: boolean; secs: number | null; detail: string | null } | null
+    runs_24h: number
+    failed_24h: number
+    /** open runs still inside their lease */
+    running: number
+  }
+  push: {
+    last: { at: string; ok: boolean | null; rows: number; detail: string | null } | null
+    waiting: number
+    oldest_waiting: string | null
+  }
+  failures: { at: string; kind: string; detail: string | null }[]
+  runs: SyncRunRow[]
+  leads: {
+    total: number
+    added_today: number
+    added_7d: number
+    last_added: string | null
+    last_changed: string | null
+    queued: number
+    undialable: number
+  }
+  outside_calls: { today: number; week: number }
+  /** the scheduler's jobs, where the database has one (null elsewhere) */
+  cron: { name: string; schedule: string; active: boolean; last_run: string | null; last_status: string | null }[] | null
 }
 
 /** recycle_pools() / recycle_preview() (B7). */

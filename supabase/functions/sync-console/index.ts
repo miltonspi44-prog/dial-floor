@@ -15,9 +15,10 @@
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY arrive built in.
 //
 // One sync at a time, like the PC loop — but edge instances share no memory, so
-// the guard lives in sync_runs: a run younger than 20 minutes with no finish is
-// one that is still going (or died mid-flight; 20 minutes is the lease). The
-// same goes for a refused password: refusal.mjs keeps that in sync_runs too.
+// the guard lives in sync_runs: a run with no finish is one that is still going,
+// for as long as its lease (runs.mjs: three minutes, longer than any instance
+// can live); past that it died, and is closed as failed here. The same goes for
+// a refused password: refusal.mjs keeps that in sync_runs too.
 //
 // A push with nothing waiting is answered without a run: cron asks every
 // minute, and logging each empty one would add 1,440 rows a day saying nothing.
@@ -27,14 +28,13 @@ import { pull } from "./vendor/pull-leads.mjs";
 import { push } from "./vendor/push-status.mjs";
 import { isAuthFailure, passwordIsRefused } from "./vendor/console.mjs";
 import { fingerprint, markRefusal, REFUSAL_RETRY_H, refusedAt } from "./refusal.mjs";
+import { DIED, LEASE_MIN, splitUnfinished } from "./runs.mjs";
 
 initSupa(createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   { auth: { persistSession: false } },
 ));
-
-const BUSY_LEASE_MIN = 20;
 
 function sameSecret(a: string, b: string): boolean {
   const enc = new TextEncoder();
@@ -46,11 +46,16 @@ function sameSecret(a: string, b: string): boolean {
 }
 
 async function busy(): Promise<boolean> {
-  const since = new Date(Date.now() - BUSY_LEASE_MIN * 60_000).toISOString();
-  const { data, error } = await supa.from("sync_runs").select("id")
-    .is("finished_at", null).gt("started_at", since).limit(1);
+  const { data, error } = await supa.from("sync_runs").select("id, started_at").is("finished_at", null);
   if (error) throw error;
-  return (data ?? []).length > 0;
+  const { live, dead } = splitUnfinished(data ?? [], Date.now(), LEASE_MIN * 60_000);
+  if (dead.length) {
+    const { error: closeErr } = await supa.from("sync_runs")
+      .update({ finished_at: new Date().toISOString(), ok: false, detail: DIED })
+      .in("id", dead.map((r: { id: number }) => r.id));
+    if (closeErr) throw closeErr;
+  }
+  return live.length > 0;
 }
 
 async function somethingToPush(): Promise<boolean> {

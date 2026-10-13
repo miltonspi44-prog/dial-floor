@@ -206,16 +206,18 @@ end $$;
 \echo '  · the queue reads lists as the function''s owner, not as the agent'
 -- 0032 (item 44) made lists and list_items manager-only, exactly the narrowing
 -- this block was written to prove safe: next_lead() reads lists as the function's
--- owner, never as the agent, so the queue keeps serving. The flip below is now a
--- re-statement of the shipped policy rather than an experiment, and the restore
--- puts back what 0032 ships.
-select set_config('t.lists_read',
-  (select string_agg(polname || ' = ' || pg_get_expr(polqual, polrelid), '; ' order by polname) from pg_policy
-    where polrelid in ('public.lists'::regclass, 'public.list_items'::regclass) and polcmd = 'r'), false) \g /dev/null
-drop policy lists_read on public.lists;
-create policy lists_read on public.lists for select to authenticated using (public.is_manager());
-drop policy list_items_read on public.list_items;
-create policy list_items_read on public.list_items for select to authenticated using (public.is_manager());
+-- owner, never as the agent, so the queue keeps serving. Since 0036 there is no
+-- read policy on either table at all — the manager policy is the only one — so
+-- this reads the shipped shape straight off instead of flipping and restoring it.
+do $$
+begin
+  assert not exists (select 1 from pg_policy
+                      where polrelid in ('public.lists'::regclass, 'public.list_items'::regclass) and polcmd = 'r'),
+    'no select-only policy is left on lists or list_items (0036)';
+  assert (select count(*) from pg_policy
+           where polrelid in ('public.lists'::regclass, 'public.list_items'::regclass) and polcmd = '*') = 2,
+    'the manager policy stands alone on each';
+end $$;
 set role authenticated;
 do $$
 declare n jsonb;
@@ -226,19 +228,10 @@ begin
   n := public.next_lead();
   assert t.name(n) = 'W' and n->>'reason' = 'list',
     format('next_lead still serves them their list lead: %s', n);
+  perform t.as_user('M');
+  assert (select count(*) from lists) = 1, 'a manager reads them through the manager policy alone';
 end $$;
 reset role;
-drop policy lists_read on public.lists;
-create policy lists_read on public.lists for select to authenticated using (public.is_manager());
-drop policy list_items_read on public.list_items;
-create policy list_items_read on public.list_items for select to authenticated using (public.is_manager());
-do $$
-begin
-  assert current_setting('t.lists_read') =
-    (select string_agg(polname || ' = ' || pg_get_expr(polqual, polrelid), '; ' order by polname) from pg_policy
-      where polrelid in ('public.lists'::regclass, 'public.list_items'::regclass) and polcmd = 'r'),
-    'both policies are back exactly as 0032 leaves them, so the groups after this one see what they expect';
-end $$;
 
 \echo '  · the helpers that were open to anyone'
 set role anon;

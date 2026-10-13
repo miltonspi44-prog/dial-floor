@@ -3,6 +3,7 @@ import { supabase, fmtPhone } from '../lib/supabase'
 import type { NumberHealthRow, SettingRow } from '../lib/types'
 import AlertSettingsCard from '../components/AlertSettingsCard'
 import LoadError from '../components/LoadError'
+import SyncCard from '../components/SyncCard'
 
 /** Item 36: every tunable that used to need the SQL editor, in one place.
  *  The database owns the whitelist and the validation (settings_set); this page
@@ -182,6 +183,9 @@ export default function Settings() {
 
       <div className="sectionhead"><h3>Alerts</h3><span className="muted small">what the floor board raises, and when</span></div>
       <AlertSettingsCard onSaved={load} />
+
+      <div className="sectionhead"><h3>Lead sync</h3><span className="muted small">the console feed and the write-backs, as they stand right now</span></div>
+      <SyncCard />
 
       <div className="sectionhead"><h3>Number health</h3><span className="muted small">a connect rate down {dropPts}+ points on the week = probable spam label — swap that number in Zoom</span></div>
       <div className="card">

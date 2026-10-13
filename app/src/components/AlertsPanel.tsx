@@ -5,6 +5,7 @@ import type { FloorAlert } from '../lib/types'
 
 const KIND: Record<FloorAlert['kind'], string> = {
   idle: 'Idle', long_call: 'Long call', pace: 'Pace', callback: 'Callback', spam: 'Number', win: 'Win',
+  sync: 'Sync', console: 'Console', outside: 'Outside',
 }
 
 function at(iso: string): string {
@@ -85,7 +86,7 @@ export default function AlertsPanel({ alerts, isManager }: { alerts: FloorAlert[
               ))}
             </ul>
           ) : (
-            <p className="muted small" style={{ margin: 0 }}>No one idle, no call running long, pace on track, callbacks on time, numbers healthy.</p>
+            <p className="muted small" style={{ margin: 0 }}>No one idle, no call running long, pace on track, callbacks on time, numbers healthy, the sync and the console both feeding the floor.</p>
           )}
         </div>
       )}

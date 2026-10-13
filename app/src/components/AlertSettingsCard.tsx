@@ -4,13 +4,16 @@ import type { AlertSettings } from '../lib/types'
 
 const DEFAULTS: AlertSettings = {
   idle_minutes: 10, long_call_minutes: 15, pace_pct: 80, callback_overdue_minutes: 15, celebrate: true, spam: true,
+  sync_quiet_minutes: 45, console_quiet_days: 3, outside_calls: true,
 }
 
-const NUMBERS: { key: 'idle_minutes' | 'long_call_minutes' | 'pace_pct' | 'callback_overdue_minutes'; label: string; unit: string }[] = [
+const NUMBERS: { key: 'idle_minutes' | 'long_call_minutes' | 'pace_pct' | 'callback_overdue_minutes' | 'sync_quiet_minutes' | 'console_quiet_days'; label: string; unit: string }[] = [
   { key: 'idle_minutes', label: 'Idle (a lead up, no dial) after', unit: 'min' },
   { key: 'long_call_minutes', label: 'One call running past', unit: 'min' },
   { key: 'pace_pct', label: 'Behind pace: on track for under', unit: '% of the dial target' },
   { key: 'callback_overdue_minutes', label: 'Callback overdue by', unit: 'min' },
+  { key: 'sync_quiet_minutes', label: 'Lead sync quiet for', unit: 'min (it pulls every 15)' },
+  { key: 'console_quiet_days', label: 'No new leads from the console for', unit: 'days' },
 ]
 
 /** E4's triggers, for managers: 0 (or unticked) turns one off. */
@@ -24,7 +27,8 @@ export default function AlertSettingsCard({ onSaved }: { onSaved: () => void }) 
       setDraft({
         idle_minutes: String(v.idle_minutes), long_call_minutes: String(v.long_call_minutes),
         pace_pct: String(v.pace_pct), callback_overdue_minutes: String(v.callback_overdue_minutes),
-        celebrate: v.celebrate, spam: v.spam,
+        sync_quiet_minutes: String(v.sync_quiet_minutes), console_quiet_days: String(v.console_quiet_days),
+        celebrate: v.celebrate, spam: v.spam, outside_calls: v.outside_calls,
       })
     })
   }, [])
@@ -35,6 +39,8 @@ export default function AlertSettingsCard({ onSaved }: { onSaved: () => void }) 
     const value: AlertSettings = {
       idle_minutes: n('idle_minutes'), long_call_minutes: n('long_call_minutes'), pace_pct: Math.min(100, n('pace_pct')),
       callback_overdue_minutes: n('callback_overdue_minutes'), celebrate: draft.celebrate === true, spam: draft.spam === true,
+      sync_quiet_minutes: n('sync_quiet_minutes'), console_quiet_days: n('console_quiet_days'),
+      outside_calls: draft.outside_calls === true,
     }
     const { error } = await supabase.from('app_settings').upsert({ key: 'alerts', value, updated_at: new Date().toISOString() })
     setSaved(error ? error.message : 'Saved')
@@ -62,6 +68,8 @@ export default function AlertSettingsCard({ onSaved }: { onSaved: () => void }) 
             onChange={(e) => setDraft({ ...draft, celebrate: e.target.checked })} /> Ring the bell for a chance given or a sale closed (everyone sees it)</label>
           <label className="radio"><input type="checkbox" checked={draft.spam === true}
             onChange={(e) => setDraft({ ...draft, spam: e.target.checked })} /> Flag a caller number whose connect rate collapses</label>
+          <label className="radio"><input type="checkbox" checked={draft.outside_calls === true}
+            onChange={(e) => setDraft({ ...draft, outside_calls: e.target.checked })} /> Say when calls were placed straight from Zoom today, outside the dialer</label>
           <div className="actionrow">
             <button className="btn primary" onClick={save}>Save</button>
             {saved && <span className="muted small">{saved}</span>}

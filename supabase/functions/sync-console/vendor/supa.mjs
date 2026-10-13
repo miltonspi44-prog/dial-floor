@@ -1,4 +1,4 @@
-import { mapLead, keepWhatWeHave, needsRefresh, sameRow, LEAD_COLUMNS } from './map.mjs'
+import { mapLead, keepWhatWeHave, needsRefresh, sameRow, sameRowExactly, LEAD_COLUMNS } from './map.mjs'
 
 export { normPhone, mapLead } from './map.mjs'
 
@@ -21,11 +21,13 @@ export const supa = new Proxy({}, {
 // at a time is safe and finishes in a fraction of the wall clock.
 const REFRESH_AT_ONCE = 5
 
-/** Upsert a batch; returns { imported, upserted, changed, refreshed, skipped,
- *  unusable, ids }: `imported` is the source ids newly inserted, `changed` how many
- *  rows the console actually had something different to say about, `skipped` the
- *  rows with no console id, `unusable` the rows whose phone number no one can dial
- *  (as { id, phone }, so a caller can name them), `ids` maps the source id of every
+/** Upsert a batch; returns { imported, looked, upserted, changed, refreshed,
+ *  skipped, unusable, ids }: `imported` is the source ids newly inserted, `looked`
+ *  how many rows were compared, `upserted` how many were actually written (a row
+ *  the same to the byte as the one on file is left alone), `changed` how many the
+ *  console actually had something different to say about, `skipped` the rows with
+ *  no console id, `unusable` the rows whose phone number no one can dial (as
+ *  { id, phone }, so a caller can name them), `ids` maps the source id of every
  *  row in this batch we hold — written or not — to its lead id, and `markPending`
  *  flags newly inserted leads to be marked `contacted` in the console. */
 export async function upsertLeads(rows, { markPending = false } = {}) {
@@ -46,7 +48,7 @@ export async function upsertLeads(rows, { markPending = false } = {}) {
   const mapped = all.filter((m) => m.source_id != null)
   const skipped = all.length - mapped.length
   if (!mapped.length) {
-    return { imported: [], upserted: 0, changed: 0, refreshed: 0, skipped, unusable, ids: new Map() }
+    return { imported: [], looked: 0, upserted: 0, changed: 0, refreshed: 0, skipped, unusable, ids: new Map() }
   }
 
   // Two rows for one console id in a single statement make Postgres stop with
@@ -73,25 +75,37 @@ export async function upsertLeads(rows, { markPending = false } = {}) {
   }
 
   // What the console actually told us that we did not already know. This is the
-  // number worth reporting as a run's rows: the refresh pass writes every lead it
-  // recognises every quarter of an hour, so counting writes counts the table.
+  // number worth reporting as a run's rows: the refresh pass looks at every lead
+  // it recognises every quarter of an hour, so counting looks counts the table.
   const changed = batch.filter((m) => {
     const prev = known.get(m.source_id)
     return !prev || !sameRow(m, prev)
   }).length
 
-  const { data: up, error } = await supa
-    .from('leads')
-    .upsert(batch, { onConflict: 'source_id' })
-    .select('id, source_id')
-  if (error) throw error
+  // Only a row with something different on it is written. The refresh pass used
+  // to rewrite every recognised row every quarter of an hour — twelve thousand
+  // rows a pass, a million row writes a day, nearly all of them identical to what
+  // was already there. `synced_at` therefore moves only when a row is written.
+  const toWrite = batch.filter((m) => {
+    const prev = known.get(m.source_id)
+    return !prev || !sameRowExactly(m, prev)
+  })
+  let up = []
+  if (toWrite.length) {
+    const { data, error } = await supa
+      .from('leads')
+      .upsert(toWrite, { onConflict: 'source_id' })
+      .select('id, source_id')
+    if (error) throw error
+    up = data ?? []
+  }
 
   // The ids of everything in this batch, taken from what we already held as well as
   // from what came back. A caller acting on one of these leads — putting a
   // do-not-call on the suppression list, say — must not depend on the upsert having
   // returned it, or an answer the console gave us gets quietly dropped.
   const ids = new Map([...known].map(([src, r]) => [src, r.id]))
-  for (const r of up ?? []) ids.set(Number(r.source_id), r.id)
+  for (const r of up) ids.set(Number(r.source_id), r.id)
   // A lead whose timezone and intent inputs all came back unchanged would get the
   // same answer out of refresh_lead() as last time, and the refresh pass finds
   // almost nothing changed. A brand new lead always needs it: that is the call
@@ -113,7 +127,8 @@ export async function upsertLeads(rows, { markPending = false } = {}) {
 
   return {
     imported: srcIds.filter((id) => !known.has(id)),
-    upserted: batch.length,
+    looked: batch.length,
+    upserted: toWrite.length,
     changed,
     refreshed: due.size,
     skipped,

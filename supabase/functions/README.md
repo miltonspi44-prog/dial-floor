@@ -42,6 +42,11 @@ What the hosted run adds on top of the PC loop:
   run's detail carries a fingerprint (an HMAC keyed with `CRON_SECRET`), and
   every instance checks for it before signing in. The same password is tried
   again at most once a day; a changed `CONSOLE_PASSWORD` is tried at once.
+- One run at a time, with a three-minute lease (`runs.mjs`). An instance
+  cannot outlive its 150 s clock, so a run still open after the lease died
+  mid-flight — the runtime ended it — and whoever finds it closes it as failed,
+  with that reason on the row. Seven of the first thousand hosted pulls ended
+  that way; the floor's sync card shows them as failures instead of silence.
 - Logs are trimmed nightly by migration 0035: seven days of pg_cron's run
   history, 90 days of `sync_runs`.
 

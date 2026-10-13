@@ -37,10 +37,34 @@ export const LEAD_COLUMNS = [
 // What refresh_lead() reads to work out a lead's timezone and its automatic
 // intents. When none of these moved, calling it again would compute the same
 // answer, and on a full refresh pass that is thousands of round trips for nothing.
+// Of extras it reads two flags, so only those two count here: the rest of that
+// object is the scraper's own bookkeeping.
 const REFRESH_INPUTS = [
   'phone_norm', 'addr_state', 'phone_type', 'website_type', 'platform', 'platform_detail',
-  'categories', 'extras', 'rating', 'review_count', 'first_seen',
+  'categories', 'rating', 'review_count', 'first_seen',
 ]
+const REFRESH_EXTRAS = ['sponsored', 'guaranteed']
+
+// Keys in extras that move every time the scraper looks at a business again
+// without anything about the business having changed. In eleven days of hosted
+// pulls they accounted for nearly every "changed" row the log reported — 46,000
+// changes on 12,000 leads — and every one of those set off a refresh_lead()
+// round trip. They are still written; they are just not news.
+const VOLATILE_EXTRAS = ['scraped_at', 'card_seen', 'page']
+
+function steadyExtras(extras) {
+  if (extras == null || typeof extras !== 'object' || Array.isArray(extras)) return extras ?? null
+  const out = {}
+  for (const [k, v] of Object.entries(extras)) if (!VOLATILE_EXTRAS.includes(k)) out[k] = v
+  return out
+}
+
+function pickExtras(extras, keys) {
+  if (extras == null || typeof extras !== 'object' || Array.isArray(extras)) return null
+  const out = {}
+  for (const k of keys) if (Object.hasOwn(extras, k)) out[k] = extras[k]
+  return out
+}
 
 /** Map a console lead row onto the dialing DB's leads table. */
 export function mapLead(row) {
@@ -165,14 +189,22 @@ export function keepWhatWeHave(next, prev) {
 /** Would writing this row change anything refresh_lead() looks at? */
 export function needsRefresh(next, prev) {
   return REFRESH_INPUTS.some((col) => !same(next[col], prev[col]))
+    || !same(pickExtras(next.extras, REFRESH_EXTRAS), pickExtras(prev.extras, REFRESH_EXTRAS))
 }
 
 /** Has the console actually got something different to say about this lead?
- *  The refresh pass walks the console's whole list every quarter of an hour and
- *  writes every row it recognises, so "rows written" counts the table, not the
- *  news. This is what the run counter should count: when it reads 0 the owner can
- *  trust that nothing came in. `synced_at` is when we last asked, which changes on
- *  every pass and is not news about the lead. */
+ *  This is what the run counter counts: when it reads 0 the owner can trust that
+ *  nothing came in. `synced_at` is when we last wrote the row, which is not news
+ *  about the lead, and neither is the scraper's own bookkeeping in extras. */
 export function sameRow(next, prev) {
+  return LEAD_COLUMNS.every((col) =>
+    col === 'synced_at' || (col === 'extras' ? same(steadyExtras(next.extras), steadyExtras(prev.extras)) : same(next[col], prev[col])))
+}
+
+/** Is there anything at all to write? Every column counts here, bookkeeping
+ *  included: the row on file should match the console, whether or not the
+ *  difference is worth telling anyone about. A row that is the same to the byte
+ *  is left alone — on a quiet quarter hour that is the whole table. */
+export function sameRowExactly(next, prev) {
   return LEAD_COLUMNS.every((col) => col === 'synced_at' || same(next[col], prev[col]))
 }
