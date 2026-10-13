@@ -15,9 +15,8 @@ begin
     return;
   end if;
   perform cron.unschedule(jobid) from cron.job where jobname = 'dial-floor tidy logs';
-  perform cron.schedule('dial-floor tidy logs', '17 9 * * *', $job$
-    delete from cron.job_run_details where end_time < now() - interval '7 days';
-    delete from public.sync_runs where started_at < now() - interval '90 days';
-  $job$);
+  perform cron.schedule('dial-floor tidy logs', '17 9 * * *',
+    'delete from cron.job_run_details where end_time < now() - interval ''7 days''; '
+    'delete from public.sync_runs where started_at < now() - interval ''90 days'';');
   raise notice 'log tidy: installed (daily at 09:17 UTC).';
 end $$;
