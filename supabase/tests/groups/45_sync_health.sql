@@ -131,8 +131,20 @@ begin
   assert not exists (select 1 from jsonb_array_elements(a) x where x->>'kind' in ('outside', 'console', 'sync')),
     'manager lines stay with managers';
   update leads set added_at = now();
-  delete from webhook_events where event_id = 't45-1';
 end $$;
+-- floor_alerts() runs as whoever asks, so a manager's own session has to be able
+-- to read the webhook's record of calls for the outside-calls line to count
+set role authenticated;
+do $$
+begin
+  perform t.as_user('M');
+  assert exists (select 1 from jsonb_array_elements(public.floor_alerts()) x where x->>'kind' = 'outside'),
+    'a manager session sees the outside call through the policy on webhook_events';
+  perform t.as_user('A');
+  assert (select count(*) from webhook_events) = 0, 'an agent reads none of the webhook''s record';
+end $$;
+reset role;
+delete from webhook_events where event_id = 't45-1';
 truncate sync_runs restart identity;
 
 \echo '45.5 · After the policy tidy-up: agents still read what the Dial page needs, and only managers write it'

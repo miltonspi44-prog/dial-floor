@@ -29,6 +29,19 @@ end $$;
 create index if not exists leads_added_at_idx on public.leads (added_at);
 create index if not exists webhook_events_received_idx on public.webhook_events (received_at);
 
+-- Managers may read the webhook's record of calls: floor_alerts() runs as
+-- whoever asks, and the outside-calls line below counts from this table. The
+-- table had row security on with no policy at all (the advisors said so too);
+-- the webhook itself writes with the service key and is unaffected.
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'webhook_events'
+                  and policyname = 'webhook_events_manager_read') then
+    create policy webhook_events_manager_read on public.webhook_events for select to authenticated
+      using (public.is_manager());
+  end if;
+end $$;
+
 -- --------------------------------------------------------------- number health --
 -- A caller number that is not ten digits is not one of our seats: the webhook once
 -- counted a call whose number parsed down to "800". Such rows stay in number_stats
