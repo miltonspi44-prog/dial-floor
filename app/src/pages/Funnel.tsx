@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase, loadTargets } from '../lib/supabase'
+import { hourLabel } from '../lib/types'
 import type { FunnelCounts, FunnelData, Targets } from '../lib/types'
+import BestTimePanel from '../components/BestTimePanel'
 
 const RANGES = [
   { days: 1, label: 'Today' },
@@ -23,10 +25,6 @@ function talk(sec: number): string {
   const h = Math.floor(sec / 3600)
   const m = Math.round((sec % 3600) / 60)
   return h ? `${h}h ${m}m` : `${m}m`
-}
-
-function hourLabel(h: number): string {
-  return `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`
 }
 
 function perDay(n: number, days: number): number {
@@ -71,8 +69,10 @@ export default function Funnel() {
   const [data, setData] = useState<FunnelData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [targets, setTargets] = useState<Targets>({ dials: null, connects: null, handoffs: null })
-  const [draft, setDraft] = useState({ dials: '', connects: '', handoffs: '' })
+  const [targets, setTargets] = useState<Targets>({ dials: null, conversations: null, handoffs: null })
+  const [draft, setDraft] = useState({ dials: '', conversations: '', handoffs: '' })
+  // A4: the shift the dial target is spread over, and the wrap-up countdown
+  const [pacing, setPacing] = useState({ shift: '8', wrap: '20' })
   const [saved, setSaved] = useState<string | null>(null)
 
   function pick(d: number) {
@@ -96,16 +96,27 @@ export default function Funnel() {
   useEffect(() => {
     loadTargets().then((t) => {
       setTargets(t)
-      setDraft({ dials: String(t.dials ?? ''), connects: String(t.connects ?? ''), handoffs: String(t.handoffs ?? '') })
+      setDraft({ dials: String(t.dials ?? ''), conversations: String(t.conversations ?? ''), handoffs: String(t.handoffs ?? '') })
+    })
+    supabase.from('app_settings').select('key, value').in('key', ['shift_hours', 'wrapup_seconds']).then(({ data }) => {
+      const v = new Map((data ?? []).map((r) => [r.key as string, String(r.value)]))
+      setPacing({ shift: v.get('shift_hours') ?? '8', wrap: v.get('wrapup_seconds') ?? '20' })
     })
   }, [])
 
   async function saveTargets() {
-    const rows = ([['dials_per_day', draft.dials], ['connects_per_day', draft.connects], ['handoffs_per_day', draft.handoffs]] as const)
+    const rows = ([['dials_per_day', draft.dials], ['conversations_per_day', draft.conversations], ['handoffs_per_day', draft.handoffs]] as const)
       .filter(([, v]) => v.trim() !== '' && Number(v) >= 0)
       .map(([metric, v]) => ({ metric, target: Number(v), scope: 'agent_day', updated_at: new Date().toISOString() }))
-    if (!rows.length) return
-    const { error: e } = await supabase.from('kpi_targets').upsert(rows)
+    const now = new Date().toISOString()
+    const settings = [
+      { key: 'shift_hours', value: Math.max(1, Math.min(16, Number(pacing.shift) || 8)), updated_at: now },
+      { key: 'wrapup_seconds', value: Math.max(0, Math.min(300, Math.round(Number(pacing.wrap) || 0))), updated_at: now },
+    ]
+    const { error: se } = await supabase.from('app_settings').upsert(settings)
+    if (se) { setSaved(se.message); return }
+    setPacing({ shift: String(settings[0].value), wrap: String(settings[1].value) })
+    const { error: e } = rows.length ? await supabase.from('kpi_targets').upsert(rows) : { error: null }
     if (e) { setSaved(e.message); return }
     setTargets(await loadTargets())
     setSaved('Targets saved')
@@ -163,7 +174,9 @@ export default function Funnel() {
               ) : <div className="muted small">No dials in this range yet.</div>}
               <p className="muted small" style={{ marginBottom: 0 }}>
                 Picked up = Zoom says the call was answered (a person, voicemail or an auto-attendant), or the agent
-                logged a live conversation. Conversations = the agent logged a live-person outcome. Handoffs = chance given / sale closed.
+                logged a live person. Conversations = a live person past the gatekeeper — a gatekeeper stop or a wrong
+                number is a connect, not a conversation. Handoffs = chance given / sale closed. Every screen counts these
+                the same way, and the daily target below is conversations.
               </p>
             </div>
 
@@ -178,7 +191,7 @@ export default function Funnel() {
                         <td>{a.name}</td>
                         <CountCells r={a} />
                         <td className="num">{perDay(a.dials, a.days)}{targets.dials ? <span className="muted"> / {targets.dials}</span> : null}</td>
-                        <td className="num">{perDay(a.conversations, a.days)}{targets.connects ? <span className="muted"> / {targets.connects}</span> : null}</td>
+                        <td className="num">{perDay(a.conversations, a.days)}{targets.conversations ? <span className="muted"> / {targets.conversations}</span> : null}</td>
                         <td className="num">{perDay(a.handoffs, a.days)}{targets.handoffs ? <span className="muted"> / {targets.handoffs}</span> : null}</td>
                       </tr>
                     ))}
@@ -251,12 +264,20 @@ export default function Funnel() {
       <div className="card">
         <div className="formrow">
           <label>Dials<input type="number" style={{ width: 110 }} min={0} value={draft.dials} onChange={(e) => setDraft({ ...draft, dials: e.target.value })} /></label>
-          <label>Conversations<input type="number" style={{ width: 110 }} min={0} value={draft.connects} onChange={(e) => setDraft({ ...draft, connects: e.target.value })} /></label>
+          <label>Conversations<input type="number" style={{ width: 110 }} min={0} value={draft.conversations} onChange={(e) => setDraft({ ...draft, conversations: e.target.value })} /></label>
           <label>Handoffs<input type="number" style={{ width: 110 }} min={0} value={draft.handoffs} onChange={(e) => setDraft({ ...draft, handoffs: e.target.value })} /></label>
+          <label>Shift (hours)<input type="number" style={{ width: 90 }} min={1} max={16} value={pacing.shift} onChange={(e) => setPacing({ ...pacing, shift: e.target.value })} /></label>
+          <label>Wrap-up (seconds)<input type="number" style={{ width: 100 }} min={0} max={300} value={pacing.wrap} onChange={(e) => setPacing({ ...pacing, wrap: e.target.value })} /></label>
           <button className="btn primary" onClick={saveTargets}>Save targets</button>
           {saved && <span className="muted small">{saved}</span>}
         </div>
+        <p className="muted small" style={{ marginBottom: 0 }}>
+          Pace on the Dial page and the floor board spreads the dial target over the shift ({Math.round((Number(draft.dials) || 0) / Math.max(1, Number(pacing.shift) || 8))} an hour).
+          The wrap-up is a countdown after each logged call: it never dials by itself; 0 turns it off.
+        </p>
       </div>
+
+      <BestTimePanel />
     </div>
   )
 }

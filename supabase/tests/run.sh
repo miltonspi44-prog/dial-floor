@@ -15,7 +15,8 @@ fi
 
 # Postgres refuses to run as root: hand the whole run to the postgres user.
 if [ "$(id -u)" = 0 ]; then
-  exec su postgres -s /bin/bash -c "PG_BIN='$bin' PG_PORT='${PG_PORT:-}' '$here/run.sh'"
+  args=""; for a in "$@"; do args="$args '$a'"; done
+  exec su postgres -s /bin/bash -c "PG_BIN='$bin' PG_PORT='${PG_PORT:-}' '$here/run.sh'$args"
 fi
 
 work="$(mktemp -d)"
@@ -32,3 +33,12 @@ for f in "$here"/../migrations/*.sql; do
   "${psql[@]}" -d dialfloor -f "$f" >/dev/null
 done
 "${psql[@]}" -d dialfloor -f "$here/queue_test.sql"
+
+# Extra groups live one file per topic in groups/, so separate work can add tests
+# without editing the same file. Pass a file to run only that one.
+if [ "$#" -gt 0 ]; then
+  for f in "$@"; do "${psql[@]}" -d dialfloor -f "$f"; done
+else
+  for f in "$here"/groups/*.sql; do [ -e "$f" ] || continue; "${psql[@]}" -d dialfloor -f "$f"; done
+fi
+echo 'all tests passed'

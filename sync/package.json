@@ -8,7 +8,8 @@
     "pull": "node --env-file=.env pull-leads.mjs",
     "push": "node --env-file=.env push-status.mjs",
     "loop": "node --env-file=.env run.mjs",
-    "import": "node --env-file=.env csv-import.mjs"
+    "import": "node --env-file=.env csv-import.mjs",
+    "test": "node --test \"test/*.test.mjs\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0"

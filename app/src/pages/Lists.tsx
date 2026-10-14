@@ -1,50 +1,158 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Profile } from '../lib/types'
+
+interface ListLead {
+  lead_id: number
+  name: string
+  phone: string | null
+  city: string | null
+  state: string | null
+  lead_state: string
+  position: number
+  served_at: string | null
+}
 
 interface ListRow {
   id: number
   name: string
   list_date: string
   status: string
+  kind: 'manual' | 'radar' | 'recycle' | 'referrals'
   agent_id: string | null
   profiles: { name: string } | null
-  total?: number
-  served?: number
+  /** 0037: a radar proposal is a draft until a manager approves it; then who did, and when */
+  approved_at: string | null
+  approver: { name: string } | null
+  /** Postgres counts the items for us; see the select in the effect below. */
+  total: { count: number }[] | null
+  served: { count: number }[] | null
+}
+
+/** A counted relation arrives as a one-row array, and as an empty one when there
+ *  was nothing to count. */
+function tally(c: { count: number }[] | null): number {
+  return c?.[0]?.count ?? 0
 }
 
 const STATES = ['', 'FL','GA','NC','SC','TN','VA','PA','OH','NY','NJ','MA','MD','CT','AL','KY','NH','ME','RI','DE','TX','WI','IL','IN','MI','AZ','CA','WA']
-const INTENTS = ['', 'no_website','social_only','free_subdomain','cheap_builder','broken_site','fresh_listing','review_rich','owner_mobile','never_answers']
+const INTENTS = ['', 'no_website','social_only','free_subdomain','cheap_builder','broken_site','fresh_listing','review_rich','owner_mobile','never_answers','seasonal_window']
+
+/** The status filter. 'open' is everything still in play, which is what this page
+ *  has always shown; the rest let a manager go and find one list in particular. */
+const STATUSES: { key: string; label: string }[] = [
+  { key: 'open', label: 'still open' },
+  { key: 'active', label: 'active' },
+  { key: 'done', label: 'closed' },
+  { key: 'draft', label: 'awaiting approval' },
+  { key: 'archived', label: 'archived' },
+  { key: 'all', label: 'any status' },
+]
+const KINDS = ['', 'manual', 'radar', 'recycle', 'referrals']
+
+/** The Status column says the same word the Status filter and the close button do.
+ *  The database calls a finished list 'done' and everything a manager reads calls
+ *  it "closed", and a column full of "done" under a filter called "closed" reads
+ *  like a bug. 'open' and 'any status' are filter-only keys, so no row matches them. */
+function statusWord(status: string): string {
+  return STATUSES.find((s) => s.key === status)?.label ?? status
+}
+
+/** Lists per page. The radar proposes one list per agent at a time (0037), and
+ *  the recycle and referral lists add to those, so a working floor still makes
+ *  several a week: unpaged, a manual list that is still being dialed drops off
+ *  the bottom of the page and can no longer be closed or archived. */
+const PAGE = 20
 
 export default function Lists() {
   const [agents, setAgents] = useState<Profile[]>([])
+  const [agentError, setAgentError] = useState<string | null>(null)
   const [lists, setLists] = useState<ListRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
+  const [filter, setFilter] = useState({ status: 'open', kind: '' })
+  const [fetched, setFetched] = useState<string | null>(null) // the filter and page the rows on screen came from
+  const [error, setError] = useState<string | null>(null)
+  // A refused close or archive is its own banner. It says nothing about whether the
+  // lists loaded, so it must not make the heading claim the count is unknown.
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reload, setReload] = useState(0) // bumped to ask the same question again after a change
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // item 38: one list opened up, its leads in hand
+  const [open, setOpen] = useState<number | null>(null)
+  const [items, setItems] = useState<ListLead[] | null>(null)
+  const [itemsErr, setItemsErr] = useState<string | null>(null)
+  const [addQ, setAddQ] = useState('')
+  const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
   const [form, setForm] = useState({ name: '', agent: '', state: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
 
-  const refresh = useCallback(async () => {
-    const { data: ls } = await supabase
+  const query = `${filter.status}|${filter.kind}|${page}`
+  // the rows on screen answer an older question than the filters now ask
+  const loading = fetched !== query
+  const loaded = fetched !== null
+
+  // Asks the same question again, after a build or a change to a row.
+  function refresh() { setReload((n) => n + 1) }
+
+  useEffect(() => {
+    // A manager picks Status and then Kind inside the same second, so two requests
+    // can be in flight at once and the slower one can land last. Everything this
+    // request writes is gated on it still being the newest one. A superseded answer
+    // that got through would fill the table with rows the dropdowns no longer ask
+    // for, and `fetched` would never catch up to `query`, which leaves the card
+    // dimmed and both pager buttons dead until the next filter change.
+    let live = true
+    // Both numbers in the burn-down come back with the lists themselves: Postgres
+    // counts the items per list, so this is one request rather than two more for
+    // every row on the page.
+    let q = supabase
       .from('lists')
-      .select('id, name, list_date, status, agent_id, profiles!lists_agent_id_fkey(name)')
-      .neq('status', 'archived')
-      .order('created_at', { ascending: false })
-      .limit(30)
-    const rows = ((ls ?? []) as unknown as ListRow[])
-    for (const r of rows) {
-      const { count: total } = await supabase.from('list_items').select('id', { count: 'exact', head: true }).eq('list_id', r.id)
-      const { count: served } = await supabase.from('list_items').select('id', { count: 'exact', head: true }).eq('list_id', r.id).not('served_at', 'is', null)
-      r.total = total ?? 0
-      r.served = served ?? 0
-    }
-    setLists(rows)
-  }, [])
+      .select('id, name, list_date, status, kind, agent_id, profiles!lists_agent_id_fkey(name),'
+        + ' approved_at, approver:profiles!lists_approved_by_fkey(name),'
+        + ' total:list_items(count), served:list_items(count)', { count: 'exact' })
+      .not('served.served_at', 'is', null)
+    if (filter.status === 'open') q = q.neq('status', 'archived')
+    else if (filter.status !== 'all') q = q.eq('status', filter.status)
+    if (filter.kind) q = q.eq('kind', filter.kind)
+    // The radar builds a whole day of lists in one transaction, so they all share
+    // a created_at to the microsecond; the id breaks the tie, or paging through
+    // them could show one list twice and skip another.
+    q.order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(page * PAGE, page * PAGE + PAGE - 1)
+      .then(({ data, count, error: e }) => {
+        if (!live) return
+        setFetched(query)
+        if (e) {
+          // The heading, the banner and the empty table all have to say the same
+          // thing, so the rows from the last good load go with the count: rows on
+          // screen under a heading that says the count is unknown is the worse lie.
+          setError(`The lists did not load: ${e.message}`)
+          setLists([])
+          setTotal(0)
+          return
+        }
+        setError(null)
+        setLists((data ?? []) as unknown as ListRow[])
+        setTotal(count ?? 0)
+      })
+    return () => { live = false }
+  }, [filter.status, filter.kind, page, query, reload])
 
   useEffect(() => {
     supabase.from('profiles').select('*').eq('active', true).order('name')
-      .then(({ data }) => setAgents((data ?? []) as Profile[]))
-    refresh()
-  }, [refresh])
+      .then(({ data, error: e }) => {
+        if (e) { setAgentError(`The agents did not load, so this list cannot be given to one yet: ${e.message}`); return }
+        setAgentError(null)
+        setAgents((data ?? []) as Profile[])
+      })
+  }, [])
+
+  function narrow(next: { status?: string; kind?: string }) {
+    setFilter({ ...filter, ...next })
+    setPage(0) // the page they were on may not exist under the new filter
+  }
 
   async function build(e: React.FormEvent) {
     e.preventDefault()
@@ -55,22 +163,110 @@ export default function Lists() {
     if (form.intent) rules.intent = form.intent
     if (form.minScore) rules.min_score = Number(form.minScore)
     if (form.mobileFirst) rules.phone_type = 'mobile'
-    const { data, error } = await supabase.rpc('build_list', {
-      p_name: form.name || `List ${new Date().toLocaleDateString()}`,
+    const name = form.name || `List ${new Date().toLocaleDateString()}`
+    const { data, error: failed } = await supabase.rpc('build_list', {
+      p_name: name,
       p_agent: form.agent || null,
       p_rules: rules,
       p_limit: Number(form.limit) || 200,
     })
     setBusy(false)
-    if (error) { setMsg(error.message); return }
-    setMsg(`Built with ${(data as { count: number }).count} leads.`)
+    if (failed) { setMsg(failed.message); return }
+    // Naming it matters: a filter below can hide the list that was just built.
+    setMsg(`Built “${name}” with ${(data as { count: number }).count} leads.`)
+    if (page === 0) refresh(); else setPage(0)
+  }
+
+  async function setStatus(l: ListRow, status: 'done' | 'archived') {
+    // A list built from rules that matched nothing has no leads at all, so saying
+    // every lead was dialed would be a claim about leads that never existed.
+    const on = tally(l.total)
+    const left = on - tally(l.served)
+    const ask = status === 'done'
+      ? `Close “${l.name}”? ` + (left
+        ? `${left} lead${left === 1 ? ' has' : 's have'} not been dialed yet, and closing the list stops them being handed out.`
+        : on ? 'Every lead on it has been dialed.'
+          : 'It has no leads on it.')
+      // 0037: a proposal nobody approved goes the same way, but the word is "discard",
+      // and the radar is going to try again
+      : l.status === 'draft'
+        ? `Discard “${l.name}”? Nothing on it has been dialed. Its leads go back to the pool`
+          + (l.kind === 'radar' ? `, and the radar proposes ${l.profiles?.name ?? 'a'} fresh list on its next run.` : '.')
+        : `Archive “${l.name}”? It drops out of the way, and you only see it again by asking for archived lists. Nothing on it is deleted.`
+    if (!window.confirm(ask)) return
+    const { error: e } = await supabase.from('lists').update({ status }).eq('id', l.id)
+    if (e) { setActionError(`“${l.name}” did not change: ${e.message}`); return }
+    setActionError(null)
     refresh()
   }
 
-  async function setStatus(id: number, status: string) {
-    await supabase.from('lists').update({ status }).eq('id', id)
+  // 0037: the manager's approval is what turns a proposal into a list the agent is
+  // served from; approve_list refuses a second radar list for an agent still
+  // dialing one, and says so
+  async function approve(l: ListRow) {
+    const on = tally(l.total)
+    const who = l.profiles?.name
+    const ask = who
+      ? `Approve “${l.name}” for ${who}? ${who} is served its ${on} lead${on === 1 ? '' : 's'} ahead of the general pool, and the radar proposes nothing more for them until it is dialed through.`
+      : `Approve “${l.name}”? It is shared, so every agent is served from it ahead of the general pool.`
+    if (!window.confirm(ask)) return
+    const { error: e } = await supabase.rpc('approve_list', { p_list: l.id })
+    if (e) { setActionError(`“${l.name}” was not approved: ${e.message}`); return }
+    setActionError(null)
     refresh()
   }
+
+  async function loadItems(listId: number) {
+    const { data, error: e } = await supabase.rpc('list_leads', { p_list: listId, p_limit: 500 })
+    if (e) { setItemsErr(e.message); setItems([]); return }
+    setItemsErr(null)
+    setItems((data ?? []) as ListLead[])
+  }
+
+  function toggleView(l: ListRow) {
+    if (open === l.id) { setOpen(null); setItems(null); return }
+    setOpen(l.id); setItems(null); setAddQ(''); setAddHits([])
+    loadItems(l.id)
+  }
+
+  // item 37: the per-list agent selector the Radar card keeps pointing at
+  async function reassign(l: ListRow, agent: string) {
+    const { error: e } = await supabase.rpc('set_list_agent', { p_list: l.id, p_agent: agent || null })
+    if (e) { setActionError(`“${l.name}” did not change hands: ${e.message}`); return }
+    setActionError(null)
+    refresh()
+  }
+
+  // item 38: hand-pick a lead onto the open list
+  async function searchLeads(q: string) {
+    setAddQ(q)
+    const digits = q.replace(/\D/g, '')
+    if (q.trim().length < 2) { setAddHits([]); return }
+    let query = supabase.from('leads').select('id, name, phone_display, addr_city, addr_state').limit(8)
+    query = digits.length >= 4 ? query.like('phone_norm', `%${digits}%`) : query.ilike('name', `%${q.trim()}%`)
+    const { data } = await query
+    setAddHits((data ?? []) as typeof addHits)
+  }
+
+  async function addLead(leadId: number) {
+    if (!open) return
+    const { error: e } = await supabase.rpc('list_add_lead', { p_list: open, p_lead: leadId })
+    if (e) { setItemsErr(e.message); return }
+    setItemsErr(null)
+    setAddQ(''); setAddHits([])
+    loadItems(open); refresh()
+  }
+
+  async function removeLead(leadId: number) {
+    if (!open) return
+    const { error: e } = await supabase.rpc('list_remove_lead', { p_list: open, p_lead: leadId })
+    if (e) { setItemsErr(e.message); return }
+    setItemsErr(null)
+    loadItems(open); refresh()
+  }
+
+  const from = total ? page * PAGE + 1 : 0
+  const to = page * PAGE + lists.length
 
   return (
     <div className="page">
@@ -98,31 +294,138 @@ export default function Lists() {
           </label>
           <button className="btn primary" disabled={busy}>{busy ? 'Building…' : 'Build list'}</button>
         </div>
+        {agentError && <p className="warnline" style={{ marginBottom: 0 }}>{agentError}</p>}
         {msg && <p className="small" style={{ marginBottom: 0 }}>{msg}</p>}
       </form>
 
-      <div className="sectionhead"><h3>Lists</h3></div>
-      <div className="card">
-        <table className="data">
-          <thead><tr><th>Name</th><th>Date</th><th>Agent</th><th>Burn-down</th><th>Status</th><th /></tr></thead>
-          <tbody>
-            {lists.map((l) => (
-              <tr key={l.id}>
-                <td>{l.name}</td>
-                <td>{l.list_date}</td>
-                <td>{l.profiles?.name ?? '—'}</td>
-                <td>{l.served}/{l.total}</td>
-                <td>{l.status}</td>
-                <td>
-                  {l.status === 'active'
-                    ? <button className="btn ghost" onClick={() => setStatus(l.id, 'done')}>close</button>
-                    : <button className="btn ghost" onClick={() => setStatus(l.id, 'archived')}>archive</button>}
-                </td>
-              </tr>
-            ))}
-            {!lists.length && <tr><td colSpan={6} className="muted">No lists yet.</td></tr>}
-          </tbody>
-        </table>
+      <div className="sectionhead">
+        <h3>Lists</h3>
+        {/* Held while the rows are on their way, so a second pick cannot stack a
+            request behind the first one and leave the table and the dropdowns
+            telling the manager two different things. */}
+        <div className="formrow">
+          <label>Status<select value={filter.status} disabled={loading} onChange={(e) => narrow({ status: e.target.value })}>
+            {STATUSES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select></label>
+          <label>Kind<select value={filter.kind} disabled={loading} onChange={(e) => narrow({ kind: e.target.value })}>
+            {KINDS.map((k) => <option key={k} value={k}>{k || 'any kind'}</option>)}
+          </select></label>
+        </div>
+        <span className="muted small" style={{ marginLeft: 'auto' }}>
+          {!loaded ? 'counting…' : error ? 'how many there are is unknown' : `${total} list${total === 1 ? '' : 's'}`}
+        </span>
+      </div>
+      {error && <div className="card alertcard">{error}</div>}
+      {actionError && <div className="card alertcard">{actionError}</div>}
+      <div className={`card ${loading && loaded ? 'stale' : ''}`}>
+        <div className="tablewrap">
+          <table className="data">
+            <thead><tr><th>Name</th><th>Date</th><th>Agent</th><th>Burn-down</th><th>Status</th><th /></tr></thead>
+            <tbody>
+              {lists.map((l) => (
+                <Fragment key={l.id}>
+                <tr key={l.id}>
+                  <td>{l.name}{l.kind !== 'manual' && <span className="tag" style={{ marginLeft: 8 }}>{l.kind}</span>}</td>
+                  <td>{l.list_date}</td>
+                  <td>
+                    {l.status === 'active' || l.status === 'draft' ? (
+                      <select value={l.agent_id ?? ''} aria-label={`Agent for ${l.name}`}
+                        onChange={(e) => reassign(l, e.target.value)}>
+                        <option value="">— shared —</option>
+                        {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    ) : (l.profiles?.name ?? '—')}
+                  </td>
+                  <td>{tally(l.served)}/{tally(l.total)}</td>
+                  <td>
+                    {statusWord(l.status)}
+                    {l.approver && (
+                      <div className="muted small">approved by {l.approver.name}{l.approved_at ? ` · ${new Date(l.approved_at).toLocaleDateString()}` : ''}</div>
+                    )}
+                  </td>
+                  <td className="rowactions">
+                    <button className="btn ghost" onClick={() => toggleView(l)}>{open === l.id ? 'hide' : 'view'}</button>
+                    {l.status === 'draft' && <button className="btn ghost" onClick={() => approve(l)}>approve</button>}
+                    {l.status === 'active' ? <button className="btn ghost" onClick={() => setStatus(l, 'done')}>close</button>
+                      : l.status === 'archived' ? <span className="muted">—</span>
+                        : <button className="btn ghost" onClick={() => setStatus(l, 'archived')}>{l.status === 'draft' ? 'discard' : 'archive'}</button>}
+                  </td>
+                </tr>
+                {open === l.id && (
+                  <tr className="listdetail">
+                    <td colSpan={6}>
+                      {itemsErr && <div className="warnline">{itemsErr}</div>}
+                      {!items ? <span className="muted small">Loading the leads…</span> : (
+                        <>
+                          {(l.status === 'active' || l.status === 'draft') && (
+                            <div className="actionrow" style={{ position: 'relative', flexWrap: 'wrap' }}>
+                              <input placeholder="add a lead: name or number…" value={addQ} style={{ minWidth: 220 }}
+                                aria-label="Find a lead to add" onChange={(e) => searchLeads(e.target.value)} />
+                              {addHits.map((h) => (
+                                <button key={h.id} className="btn small" onClick={() => addLead(h.id)}>
+                                  + {h.name}{h.addr_city ? ` · ${h.addr_city}, ${h.addr_state}` : ''}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {items.length ? (
+                            <div className="tablewrap"><table className="data">
+                              <thead><tr><th>#</th><th>Lead</th><th>Where</th><th>Phone</th><th>State</th><th>Served</th><th /></tr></thead>
+                              <tbody>
+                                {items.map((it) => (
+                                  <tr key={it.lead_id}>
+                                    <td>{it.position}</td>
+                                    <td>{it.name}</td>
+                                    <td>{[it.city, it.state].filter(Boolean).join(', ') || '—'}</td>
+                                    <td>{it.phone ?? '—'}</td>
+                                    <td>{it.lead_state}</td>
+                                    <td>{it.served_at ? new Date(it.served_at).toLocaleDateString() : '—'}</td>
+                                    <td className="rowactions">
+                                      {(l.status === 'active' || l.status === 'draft') && !it.served_at && (
+                                        <button className="btn ghost small" onClick={() => removeLead(it.lead_id)}>remove</button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table></div>
+                          ) : <span className="muted small">Nothing on this list.</span>}
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+              ))}
+              {!lists.length && (
+                <tr>
+                  <td colSpan={6} className="muted">
+                    {!loaded ? 'Loading the lists…'
+                      : error ? 'The lists could not be read, so none can be shown.'
+                        : total ? 'Nothing left on this page — go back towards the newer lists.'
+                          : filter.status !== 'open' || filter.kind ? 'No lists match that filter.'
+                            // "still open" is itself a filter — it hides the archived ones — so
+                            // this cannot promise there are no lists at all, only none still open.
+                            : 'No lists are still open. Build one above, or pick “archived” to see ones already put away. The radar proposes one here for each free agent; approve it and they are served from it.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {/* The pager stays on screen on any page past the first, even when what is
+            left now fits on one page: archiving the only row of page 2 drops the
+            total back under a pageful, and without the second test the Newer button
+            would vanish with the manager stranded on an empty page. */}
+        {(total > PAGE || page > 0) && (
+          <div className="actionrow" style={{ marginTop: 10 }}>
+            <button className="btn" disabled={page === 0 || loading} onClick={() => setPage(page - 1)}>Newer</button>
+            <button className="btn" disabled={to >= total || loading} onClick={() => setPage(page + 1)}>Older</button>
+            {/* On a page whose rows have all been archived away, from–to would count
+                past the total ("41–40 of 40"), so say only what is still true. */}
+            <span className="muted small">{lists.length ? `${from}–${to} of ${total}` : `${total} in all`}</span>
+          </div>
+        )}
       </div>
     </div>
   )
