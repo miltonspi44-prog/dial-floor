@@ -85,7 +85,7 @@ export default function Lists() {
   const [itemsErr, setItemsErr] = useState<string | null>(null)
   const [addQ, setAddQ] = useState('')
   const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
-  const [form, setForm] = useState({ name: '', agent: '', state: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
+  const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
 
   const query = `${filter.status}|${filter.kind}|${page}`
   // the rows on screen answer an older question than the filters now ask
@@ -159,6 +159,8 @@ export default function Lists() {
     setBusy(true); setMsg(null)
     const rules: Record<string, unknown> = {}
     if (form.state) rules.state = form.state
+    // 0038: the first three digits of the number, one area code or several (305,786)
+    if (form.areaCode.trim()) rules.area_code = form.areaCode.trim()
     if (form.tier) rules.tier = form.tier
     if (form.intent) rules.intent = form.intent
     if (form.minScore) rules.min_score = Number(form.minScore)
@@ -281,6 +283,8 @@ export default function Lists() {
           <label>State<select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })}>
             {STATES.map((s) => <option key={s} value={s}>{s || 'any'}</option>)}
           </select></label>
+          <label>Area code<input style={{ width: 120 }} value={form.areaCode} onChange={(e) => setForm({ ...form, areaCode: e.target.value })}
+            placeholder="305 or 305,786" inputMode="numeric" title="The first three digits of the number; several separated by commas" /></label>
           <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
             <option value="">any</option><option>A</option><option>B</option><option>C</option>
           </select></label>
