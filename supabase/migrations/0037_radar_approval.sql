@@ -285,7 +285,8 @@ begin
         having count(*) >= 20 and count(*) filter (where g.convo)::numeric / count(*) >= 1.5 * f.rate
          order by (count(*) filter (where g.convo)::numeric / count(*)) / f.rate desc
          limit 6) s),
-    -- the radar lists still in play (waiting for approval, or being dialed) and today's
+    -- the radar lists still in play (waiting for approval, or being dialed) and the
+    -- ones closed today; a list put away stays away
     'lists', (select coalesce(jsonb_agg(jsonb_build_object(
           'list_id', ld.id, 'agent', p.name, 'name', ld.name, 'status', ld.status,
           'list_date', ld.list_date, 'created_at', ld.created_at,
@@ -297,7 +298,7 @@ begin
        from lists ld
        left join profiles p on p.id = ld.agent_id
        left join profiles ap on ap.id = ld.approved_by
-      where ld.kind = 'radar' and (ld.status in ('draft', 'active') or ld.list_date = v_today))
+      where ld.kind = 'radar' and (ld.status in ('draft', 'active') or (ld.status = 'done' and ld.list_date = v_today)))
   ) into r;
   return r;
 end $$;

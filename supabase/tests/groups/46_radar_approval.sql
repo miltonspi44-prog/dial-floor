@@ -155,6 +155,8 @@ begin
   assert exists (select 1 from jsonb_array_elements(r->'lists') x
                   where x->>'status' = 'active' and x->>'approved_by' = (select name from profiles where id = t.uid('M'))),
     'an approved list says who approved it';
+  assert not exists (select 1 from jsonb_array_elements(r->'lists') x where x->>'status' = 'archived'),
+    'the proposal discarded earlier today stays out of the way';
   insert into app_settings (key, value) values ('alerts', '{"radar_approvals": false}')
     on conflict (key) do update set value = app_settings.value || excluded.value;
   assert not exists (select 1 from jsonb_array_elements(public.floor_alerts()) x where x->>'kind' = 'radar'),
