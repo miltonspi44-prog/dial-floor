@@ -679,7 +679,7 @@ end $$;
 reset role;
 delete from ab_tests;
 
-\echo '23 · Radar: no pickup in business hours flags the AI-receptionist list; each business day every agent is dealt the best leads, once'
+\echo '23 · Radar: no pickup in business hours flags the AI-receptionist list; the morning run proposes each agent their best leads, once'
 select t.reset() \g /dev/null
 -- every hour of every day is business hours here, and 3 tries make the list
 update app_settings set value = '{"start":"00:00","end":"23:59:59","days":[1,2,3,4,5,6,7]}' where key = 'business_hours';
@@ -745,7 +745,7 @@ begin
   perform set_config('role', 'postgres', true);
   perform t.as_user('A');
   r := public.radar_daily();
-  assert (r->>'ran')::boolean and (r->>'lists')::int = 2, format('the first page of the day deals each active agent a list: %s', r);
+  assert (r->>'ran')::boolean and (r->>'lists')::int = 2, format('the first page of the day proposes each active agent a list: %s', r);
   assert not (public.radar_daily()->>'ran')::boolean, 'and only once a day';
   la := (select id from lists where kind = 'radar' and agent_id = t.uid('A'));
   lb := (select id from lists where kind = 'radar' and agent_id = t.uid('B'));
@@ -755,21 +755,27 @@ begin
   assert not exists (select 1 from lists where kind = 'radar' and agent_id = t.uid('M')), 'managers are not dealt a list';
   assert not exists (select 1 from lists where kind = 'radar' and agent_id = 'dddddddd-0000-0000-0000-00000000000d'), 'nor is an agent off the floor';
   assert (select count(*) from lead_intents where intent_key = 'seasonal_window' and source = 'radar') = 2, 'in-season trades are tagged';
+  -- 0037: a proposal is served only once a manager has approved it
   n := t.next('A');
-  assert n->>'reason' = 'list', format('A is served from their radar list: %s', n->>'reason');
+  assert n->>'reason' <> 'list', format('nothing is served from a proposal: %s', n->>'reason');
   perform t.fails('select public.radar_deal_now()', 'manager only');
   perform t.fails('select public.radar()', 'manager only');
+  perform t.as_user('M');
+  perform public.approve_list(la);
+  n := t.next('A');
+  assert n->>'reason' = 'list', format('approved, A is served from their radar list: %s', n->>'reason');
 
   perform t.as_user('M');
   r := public.radar();
   assert (r->'never_answers'->>'total')::int = 1 and (r->'never_answers'->>'new_this_week')::int = 1, format('never answers: %s', r->'never_answers');
-  assert jsonb_array_length(r->'lists') = 2, 'today''s radar lists are on the card';
+  assert jsonb_array_length(r->'lists') = 2, 'both radar lists are on the card: one approved, one waiting';
   assert (select count(*) from jsonb_array_elements(r->'seasons') x where (x->>'open')::boolean) = 1, 'the season shows open';
   assert jsonb_array_length(r->'fresh_no_site') = 0, 'two fresh no-site roofers are not a cluster yet (3 needed)';
-  assert (public.radar_deal_now()->'dealt') = '[]'::jsonb, 'dealing again mid-day leaves agents with a list alone';
+  assert (public.radar_deal_now()->'dealt') = '[]'::jsonb, 'proposing again mid-day leaves agents with a list alone';
 end $$;
 reset role;
--- the next business day: yesterday's radar lists close and fresh ones are dealt
+-- the next business day (0037): a list still being dialed and one still waiting
+-- for approval both stand, and nothing new is proposed for their agents
 update lists set list_date = list_date - 1 where kind = 'radar';
 update app_settings set value = jsonb_set(value, '{date}', to_jsonb((business_date() - 1)::text)) where key = 'radar_last_run';
 set role authenticated;
@@ -777,9 +783,10 @@ do $$
 begin
   perform set_config('role', 'postgres', true);  -- same bookkeeping reads as above
   perform t.as_user('B');
-  assert (public.radar_daily()->>'ran')::boolean, 'a new day, a new deal';
-  assert (select count(*) from lists where kind = 'radar' and status = 'done') = 2, 'yesterday''s radar lists are closed';
-  assert (select count(*) from lists where kind = 'radar' and status = 'active' and list_date = business_date()) = 2, 'today''s are dealt';
+  assert (public.radar_daily()->>'ran')::boolean, 'a new day, a new run';
+  assert (select count(*) from lists where kind = 'radar') = 2, 'no new lists: A is still dialing theirs, B''s is still waiting';
+  assert (select count(*) from lists where kind = 'radar' and status = 'active' and agent_id = t.uid('A')) = 1
+     and (select count(*) from lists where kind = 'radar' and status = 'draft' and agent_id = t.uid('B')) = 1, 'both as they were';
 
   -- the lists the radar cards build: trade, city, website, freshness
   perform t.as_user('M');

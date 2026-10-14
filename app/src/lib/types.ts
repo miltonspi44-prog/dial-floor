@@ -193,7 +193,13 @@ export interface RadarData {
   never_answers: { total: number; dialable: number; new_this_week: number }
   seasons: { label: string; keys: string[]; open: boolean; opens_next_month: boolean; dialable: number; resting: number }[]
   converting: { kind: 'intent' | 'trade'; label: string; dials: number; rate: number; floor: number; ratio: number }[]
-  lists: { list_id: number; agent: string | null; name: string; status: string; total: number; served: number }[]
+  /** 0037: every radar list still in play (waiting for approval, or being dialed) and today's */
+  lists: {
+    list_id: number; agent: string | null; name: string; status: string; list_date: string; created_at: string
+    approved_by: string | null; approved_at: string | null; total: number; served: number
+    /** unserved leads that can still be served; 0 means dialed through */
+    left: number
+  }[]
 }
 
 /** Daily per-agent targets from kpi_targets (F4). */
@@ -305,7 +311,7 @@ export interface PaceRow {
 /** floor_alerts() (E4). Keys are stable, so a notification fires once per event. */
 export interface FloorAlert {
   key: string
-  kind: 'win' | 'idle' | 'long_call' | 'pace' | 'callback' | 'spam' | 'sync' | 'console' | 'outside'
+  kind: 'win' | 'idle' | 'long_call' | 'pace' | 'callback' | 'spam' | 'sync' | 'console' | 'outside' | 'radar'
   level: 'good' | 'warn'
   agent: string | null
   title: string
@@ -326,6 +332,8 @@ export interface AlertSettings {
   console_quiet_days: number
   /** calls placed straight from Zoom today, outside the dialer */
   outside_calls: boolean
+  /** 0037: a radar list waiting for a manager's approval */
+  radar_approvals: boolean
 }
 
 /** sync_health() (Wave 5): the lead sync as the Settings page shows it. */

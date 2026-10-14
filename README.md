@@ -140,10 +140,16 @@ project's public URL and publishable key.
     under **Removed**, and **restore** brings them back.
   - A manager can't remove, demote or take themselves off the floor, so there's
     always an active manager. Agents can't change their own role.
-- **Radar** (managers): the first Dial or Radar page of each business day
-  ranks the pool and deals every active agent their best leads as a "Radar"
-  list (`radar_deal_per_agent`, 0 turns it off). Yesterday's radar lists close,
-  so unworked leads get re-ranked. The cards:
+- **Radar** (managers): the morning run (the scheduler at 13:00 UTC, or the
+  first Dial or Radar page of the business day) ranks the pool and *proposes*
+  every free agent their best leads as a "Radar" list (`radar_deal_per_agent`,
+  0 turns it off). A proposal waits on the Lists and Radar tabs until a manager
+  approves it; only then is the agent served from it. No new list is proposed
+  for an agent while one of theirs is waiting for approval or still being
+  dialed, and a list dialed through closes itself at the next run. Discarding a
+  proposal puts its leads back and the radar tries again next morning. The
+  Floor says when a proposal is waiting (alert switch `radar_approvals`). The
+  cards:
   - callbacks due today;
   - leads that never answer: 4+ unanswered tries during their own business
     hours. That's the AI-receptionist list, and agents see the tries as their
@@ -221,7 +227,7 @@ Stored in `app_settings`; change them in the Supabase SQL editor, e.g.
 | `spam_alert_drop_pts` | `10` | A number whose connect rate drops this many points week over week is flagged on the floor board |
 | `missed_call_threshold` | `4` | Unanswered tries during a lead's business hours that put it on the never-answers (AI-receptionist) list |
 | `business_hours` | `{"start":"08:00","end":"17:00","days":[1,2,3,4,5]}` | A lead's business hours on its own clock (days 1 = Monday … 7 = Sunday), for the never-answers count |
-| `radar_deal_per_agent` | `100` | Leads each active agent is dealt every morning as their Radar list; `0` turns the morning lists off (also on the Radar tab) |
+| `radar_deal_per_agent` | `100` | Leads on each proposed Radar list; `0` turns the radar lists off (also on the Radar tab) |
 | `seasons` | trades and months from the lead-scraping plan §7 | Seasonal windows: `[{"label","keys":[category keys],"months":[1-12],"states":[optional]}]`; in-season leads get the "Seasonal window open" intent |
 | `wrapup_seconds` | `20` | Wrap-up countdown after each logged call, `0` = off; it never dials by itself (also on the Funnel tab) |
 | `shift_hours` | `8` | The shift the daily dial target is spread over for pace (also on the Funnel tab) |

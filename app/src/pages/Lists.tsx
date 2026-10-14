@@ -21,6 +21,9 @@ interface ListRow {
   kind: 'manual' | 'radar' | 'recycle' | 'referrals'
   agent_id: string | null
   profiles: { name: string } | null
+  /** 0037: a radar proposal is a draft until a manager approves it; then who did, and when */
+  approved_at: string | null
+  approver: { name: string } | null
   /** Postgres counts the items for us; see the select in the effect below. */
   total: { count: number }[] | null
   served: { count: number }[] | null
@@ -41,7 +44,7 @@ const STATUSES: { key: string; label: string }[] = [
   { key: 'open', label: 'still open' },
   { key: 'active', label: 'active' },
   { key: 'done', label: 'closed' },
-  { key: 'draft', label: 'draft' },
+  { key: 'draft', label: 'awaiting approval' },
   { key: 'archived', label: 'archived' },
   { key: 'all', label: 'any status' },
 ]
@@ -55,10 +58,10 @@ function statusWord(status: string): string {
   return STATUSES.find((s) => s.key === status)?.label ?? status
 }
 
-/** Lists per page. The morning radar deals one list per agent per day and adds
- *  the recycle and referral lists, so a floor of four agents makes about six a
- *  day: unpaged, a manual list that is still being dialed drops off the bottom
- *  of the page inside a week and can no longer be closed or archived. */
+/** Lists per page. The radar proposes one list per agent at a time (0037), and
+ *  the recycle and referral lists add to those, so a working floor still makes
+ *  several a week: unpaged, a manual list that is still being dialed drops off
+ *  the bottom of the page and can no longer be closed or archived. */
 const PAGE = 20
 
 export default function Lists() {
@@ -106,6 +109,7 @@ export default function Lists() {
     let q = supabase
       .from('lists')
       .select('id, name, list_date, status, kind, agent_id, profiles!lists_agent_id_fkey(name),'
+        + ' approved_at, approver:profiles!lists_approved_by_fkey(name),'
         + ' total:list_items(count), served:list_items(count)', { count: 'exact' })
       .not('served.served_at', 'is', null)
     if (filter.status === 'open') q = q.neq('status', 'archived')
@@ -183,10 +187,31 @@ export default function Lists() {
         ? `${left} lead${left === 1 ? ' has' : 's have'} not been dialed yet, and closing the list stops them being handed out.`
         : on ? 'Every lead on it has been dialed.'
           : 'It has no leads on it.')
-      : `Archive “${l.name}”? It drops out of the way, and you only see it again by asking for archived lists. Nothing on it is deleted.`
+      // 0037: a proposal nobody approved goes the same way, but the word is "discard",
+      // and the radar is going to try again
+      : l.status === 'draft'
+        ? `Discard “${l.name}”? Nothing on it has been dialed. Its leads go back to the pool`
+          + (l.kind === 'radar' ? `, and the radar proposes ${l.profiles?.name ?? 'a'} fresh list on its next run.` : '.')
+        : `Archive “${l.name}”? It drops out of the way, and you only see it again by asking for archived lists. Nothing on it is deleted.`
     if (!window.confirm(ask)) return
     const { error: e } = await supabase.from('lists').update({ status }).eq('id', l.id)
     if (e) { setActionError(`“${l.name}” did not change: ${e.message}`); return }
+    setActionError(null)
+    refresh()
+  }
+
+  // 0037: the manager's approval is what turns a proposal into a list the agent is
+  // served from; approve_list refuses a second radar list for an agent still
+  // dialing one, and says so
+  async function approve(l: ListRow) {
+    const on = tally(l.total)
+    const who = l.profiles?.name
+    const ask = who
+      ? `Approve “${l.name}” for ${who}? ${who} is served its ${on} lead${on === 1 ? '' : 's'} ahead of the general pool, and the radar proposes nothing more for them until it is dialed through.`
+      : `Approve “${l.name}”? It is shared, so every agent is served from it ahead of the general pool.`
+    if (!window.confirm(ask)) return
+    const { error: e } = await supabase.rpc('approve_list', { p_list: l.id })
+    if (e) { setActionError(`“${l.name}” was not approved: ${e.message}`); return }
     setActionError(null)
     refresh()
   }
@@ -312,12 +337,18 @@ export default function Lists() {
                     ) : (l.profiles?.name ?? '—')}
                   </td>
                   <td>{tally(l.served)}/{tally(l.total)}</td>
-                  <td>{statusWord(l.status)}</td>
+                  <td>
+                    {statusWord(l.status)}
+                    {l.approver && (
+                      <div className="muted small">approved by {l.approver.name}{l.approved_at ? ` · ${new Date(l.approved_at).toLocaleDateString()}` : ''}</div>
+                    )}
+                  </td>
                   <td className="rowactions">
                     <button className="btn ghost" onClick={() => toggleView(l)}>{open === l.id ? 'hide' : 'view'}</button>
+                    {l.status === 'draft' && <button className="btn ghost" onClick={() => approve(l)}>approve</button>}
                     {l.status === 'active' ? <button className="btn ghost" onClick={() => setStatus(l, 'done')}>close</button>
                       : l.status === 'archived' ? <span className="muted">—</span>
-                        : <button className="btn ghost" onClick={() => setStatus(l, 'archived')}>archive</button>}
+                        : <button className="btn ghost" onClick={() => setStatus(l, 'archived')}>{l.status === 'draft' ? 'discard' : 'archive'}</button>}
                   </td>
                 </tr>
                 {open === l.id && (
@@ -375,7 +406,7 @@ export default function Lists() {
                           : filter.status !== 'open' || filter.kind ? 'No lists match that filter.'
                             // "still open" is itself a filter — it hides the archived ones — so
                             // this cannot promise there are no lists at all, only none still open.
-                            : 'No lists are still open. Build one above, or pick “archived” to see ones already put away.'}
+                            : 'No lists are still open. Build one above, or pick “archived” to see ones already put away. The radar proposes one here for each free agent; approve it and they are served from it.'}
                   </td>
                 </tr>
               )}

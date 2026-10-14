@@ -55,17 +55,40 @@ export default function Radar() {
     if (!Number.isFinite(n)) return
     const { error: e } = await supabase.from('app_settings').update({ value: n, updated_at: new Date().toISOString() }).eq('key', 'radar_deal_per_agent')
     if (e) { say(e.message); return }
-    say(n ? `Each agent gets ${n} leads a morning` : 'Morning radar lists are off')
+    say(n ? `Each proposed radar list holds ${n} leads` : 'Radar lists are off')
     load()
   }
 
-  async function dealNow() {
+  // 0037: the radar proposes, a manager approves. "Propose now" is the morning run's
+  // dealing step on demand: a list closes when it is dialed through, and every
+  // agent with none waiting and none being dialed is proposed a fresh one.
+  async function proposeNow() {
     setBusy(true)
     const { data: r, error: e } = await supabase.rpc('radar_deal_now')
     setBusy(false)
     if (e) { say(e.message); return }
-    const dealt = (r as { dealt: unknown[] }).dealt.length
-    say(dealt ? `Dealt ${dealt} radar list${dealt === 1 ? '' : 's'}` : 'Every active agent already has today’s radar list')
+    const out = r as { dealt: unknown[]; closed: number }
+    const n = out.dealt.length
+    say(n ? `Proposed ${n} radar list${n === 1 ? '' : 's'}: approve ${n === 1 ? 'it' : 'them'} below`
+      : out.closed ? `Closed ${out.closed} list${out.closed === 1 ? '' : 's'} dialed through; nobody is free for a new one yet`
+        : 'Nobody is free for a new list: every active agent has one waiting for approval or still being dialed')
+    load()
+  }
+
+  async function approve(l: RadarData['lists'][number]) {
+    const who = l.agent ?? 'everyone'
+    if (!window.confirm(`Approve “${l.name}” for ${who}? ${who} is served its ${l.total} leads ahead of the general pool, and the radar proposes nothing more for them until it is dialed through.`)) return
+    const { error: e } = await supabase.rpc('approve_list', { p_list: l.list_id })
+    if (e) { say(e.message); return }
+    say(`Approved: ${who} is served from “${l.name}” from their next lead on`)
+    load()
+  }
+
+  async function discard(l: RadarData['lists'][number]) {
+    if (!window.confirm(`Discard “${l.name}”? Nothing on it has been dialed. Its leads go back to the pool, and the radar proposes ${l.agent ?? 'a'} fresh list on its next run.`)) return
+    const { error: e } = await supabase.from('lists').update({ status: 'archived' }).eq('id', l.list_id)
+    if (e) { say(e.message); return }
+    say(`Discarded “${l.name}”`)
     load()
   }
 
@@ -84,7 +107,7 @@ export default function Radar() {
         <h3>Radar · {today}</h3>
         <span className="muted small">
           {data.last_run?.date === data.date
-            ? `ranked and dealt at ${when(data.last_run.at)}`
+            ? `ranked and proposed at ${when(data.last_run.at)}`
             : 'runs with the first Dial page of the day'}
         </span>
       </div>
@@ -168,37 +191,50 @@ export default function Radar() {
       </div>
 
       <div className="sectionhead">
-        <h3>Today’s radar lists</h3>
-        <span className="muted small">every active agent gets their best leads each morning, dealt round-robin down the ranking</span>
+        <h3>Radar lists</h3>
+        <span className="muted small">the radar proposes each free agent their best leads; a manager approves the list, and nothing more is proposed for that agent until it is dialed through</span>
       </div>
       <div className="card">
         {data.lists.length ? (
           <div className="tablewrap">
             <table className="data">
-              <thead><tr><th>Agent</th><th>List</th><th className="barcol">Worked</th></tr></thead>
+              <thead><tr><th>Agent</th><th>List</th><th>Status</th><th className="barcol">Worked</th><th /></tr></thead>
               <tbody>
                 {data.lists.map((l) => (
                   <tr key={l.list_id}>
-                    <td>{l.agent ?? '—'}</td>
-                    <td>{l.name}{l.status !== 'active' && <span className="tag off" style={{ marginLeft: 8 }}>{l.status}</span>}</td>
+                    <td>{l.agent ?? '— shared —'}</td>
+                    <td>{l.name}</td>
+                    <td>
+                      {l.status === 'draft' ? <span className="tag">awaiting approval</span>
+                        : l.status === 'active' ? <span className="small">{l.approved_by ? `approved by ${l.approved_by}` : 'approved'}{l.approved_at ? ` · ${new Date(l.approved_at).toLocaleDateString()}` : ''}</span>
+                          : <span className="tag off">{l.status === 'done' ? 'closed' : l.status}</span>}
+                    </td>
                     <td className="barcol">
                       <span className="barcell">
                         <span className="minibar"><i style={{ width: `${l.total ? (100 * l.served) / l.total : 0}%` }} /></span>
-                        <span className="n">{l.served}/{l.total}</span>
+                        <span className="n">{l.served}/{l.total}{l.status === 'active' ? ` · ${l.left} left` : ''}</span>
                       </span>
+                    </td>
+                    <td className="rowactions">
+                      {l.status === 'draft' && (
+                        <>
+                          <button className="btn small primary" disabled={busy} onClick={() => approve(l)}>Approve</button>
+                          <button className="btn ghost small" disabled={busy} onClick={() => discard(l)}>discard</button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        ) : <span className="muted small">{data.per_agent ? 'None dealt yet today (no active agents, or the day’s run hasn’t happened).' : 'Morning radar lists are off.'}</span>}
+        ) : <span className="muted small">{data.per_agent ? 'Nothing in play: no proposal waiting and no list being dialed. The morning run proposes one for each free agent, or use Propose now.' : 'Radar lists are off.'}</span>}
         <div className="formrow" style={{ marginTop: 12 }}>
-          <label>Leads per agent each morning (0 = off)
+          <label>Leads per proposed list (0 = off)
             <input type="number" min={0} max={1000} style={{ width: 110 }} value={perAgent} onChange={(e) => setPerAgent(e.target.value)} />
           </label>
           <button className="btn" onClick={saveSize} disabled={String(data.per_agent) === perAgent}>Save</button>
-          <button className="btn" onClick={dealNow} disabled={busy || !data.per_agent} title="Deals to active agents who don’t have today’s list yet">Deal now</button>
+          <button className="btn" onClick={proposeNow} disabled={busy || !data.per_agent} title="Closes lists dialed through, then proposes a list to every active agent with none waiting and none being dialed">Propose now</button>
           <Link to="/lists" className="small">all lists</Link>
         </div>
       </div>
