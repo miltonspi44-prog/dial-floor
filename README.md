@@ -60,7 +60,9 @@ project's public URL and publishable key.
 
 - Manager builds/assigns lists (Lists tab) — or agents pull from the general
   pool ordered by score. A list assigned to an agent is theirs alone; an
-  unassigned list is shared by everyone.
+  unassigned list is shared by everyone. The builder's rules: state, tier,
+  intent, minimum score, mobile numbers only, and area code (the first three
+  digits of the number; one, or several separated by commas: `305,786`).
 - Agents: **D** dials · **S** skips (the lead sits out an hour) · non-connects
   are one key (**N/V/B/X**) · **C** opens the outcome popup (**R** there saves
   a referral) · **P** pauses · everything advances automatically. Mouse works
