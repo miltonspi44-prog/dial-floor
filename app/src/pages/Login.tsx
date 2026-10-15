@@ -1,9 +1,7 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-/** notice: why the last session ended by itself (a clock the dialer cannot keep a
- *  session on), shown above the form until the next sign-in attempt. */
-export default function Login({ notice = null }: { notice?: string | null }) {
+export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -22,7 +20,6 @@ export default function Login({ notice = null }: { notice?: string | null }) {
       <form className="loginbox card" onSubmit={submit}>
         <h1>Dial Floor</h1>
         <p className="muted small" style={{ margin: 0 }}>Sign in with the account your manager created for you.</p>
-        {notice && <div className="warnline" role="alert">{notice}</div>}
         <label htmlFor="login-email" className="small" style={{ fontWeight: 600 }}>Email</label>
         <input id="login-email" type="email" autoComplete="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
         <label htmlFor="login-password" className="small" style={{ fontWeight: 600 }}>Password</label>

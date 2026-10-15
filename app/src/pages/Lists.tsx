@@ -91,11 +91,12 @@ export default function Lists() {
   const [addQ, setAddQ] = useState('')
   const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
   const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
-  // 0039: the trades on file, with how many dialable leads each holds; a list can take any of them
-  const [trades, setTrades] = useState<{ key: string; n: number }[]>([])
+  // 0041: the trades and sources on offer, counted under the rules picked so far
+  // (tier first, then state and area code, then each other), and how many leads
+  // the rules match in all. A list takes any of the trades picked, and any of
+  // the sources picked.
+  const [counts, setCounts] = useState<{ trades: { key: string; n: number }[]; sources: { key: string; n: number }[]; total: number } | null>(null)
   const [pickedTrades, setPickedTrades] = useState<string[]>([])
-  // 0040: where the leads came from (the scraper's source), with dialable counts
-  const [sources, setSources] = useState<{ key: string; n: number }[]>([])
   const [pickedSources, setPickedSources] = useState<string[]>([])
 
   const query = `${filter.status}|${filter.kind}|${page}`
@@ -151,10 +152,25 @@ export default function Lists() {
     return () => { live = false }
   }, [filter.status, filter.kind, page, query, reload])
 
+  // the same rules the build will send, so the numbers shown are the numbers built
+  const countRules: Record<string, unknown> = {}
+  if (form.tier) countRules.tier = form.tier
+  if (form.state) countRules.state = form.state
+  if (/^[2-9]\d{2}(\s*,\s*[2-9]\d{2})*$/.test(form.areaCode.trim())) countRules.area_code = form.areaCode.trim()
+  if (pickedTrades.length) countRules.category = pickedTrades.join(',')
+  if (pickedSources.length) countRules.source = pickedSources.join(',')
+  const countKey = JSON.stringify(countRules)
   useEffect(() => {
-    supabase.rpc('lead_categories').then(({ data }) => setTrades((data ?? []) as { key: string; n: number }[]))
-    supabase.rpc('lead_sources').then(({ data }) => setSources((data ?? []) as { key: string; n: number }[]))
-  }, [reload])
+    let live = true
+    supabase.rpc('builder_counts', { p_rules: JSON.parse(countKey) }).then(({ data }) => {
+      if (live && data) setCounts(data as typeof counts)
+    })
+    return () => { live = false }
+  }, [countKey, reload])
+
+  function pickTrade(key: string) { if (key && !pickedTrades.includes(key)) setPickedTrades([...pickedTrades, key]) }
+  function pickSource(key: string) { if (key && !pickedSources.includes(key)) setPickedSources([...pickedSources, key]) }
+  const countOf = (list: { key: string; n: number }[] | undefined, key: string) => list?.find((x) => x.key === key)?.n ?? 0
 
   useEffect(() => {
     supabase.from('profiles').select('*').eq('active', true).order('name')
@@ -311,23 +327,25 @@ export default function Lists() {
             <option value="">— unassigned —</option>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select></label>
+          <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
+            <option value="">any</option><option>A</option><option>B</option><option>C</option>
+          </select></label>
           <label>State<select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })}>
             {STATES.map((s) => <option key={s} value={s}>{s || 'any'}</option>)}
           </select></label>
           <label>Area code<input style={{ width: 120 }} value={form.areaCode} onChange={(e) => setForm({ ...form, areaCode: e.target.value })}
             placeholder="305 or 305,786" inputMode="numeric" title="The first three digits of the number; several separated by commas" /></label>
-          <label>Trade<select multiple size={5} style={{ minWidth: 170 }} value={pickedTrades}
-            title="Any of the trades picked; Ctrl or ⌘-click for several"
-            onChange={(e) => setPickedTrades(Array.from(e.target.selectedOptions, (o) => o.value))}>
-            {trades.map((t) => <option key={t.key} value={t.key}>{tradeWord(t.key)} ({t.n})</option>)}
+          <label>Trade<select value="" onChange={(e) => pickTrade(e.target.value)} title="Pick as many as you like; the list takes leads in any of them">
+            <option value="">{pickedTrades.length ? 'add another trade…' : 'any trade — or pick…'}</option>
+            {(counts?.trades ?? []).filter((t) => !pickedTrades.includes(t.key)).map((t) => (
+              <option key={t.key} value={t.key}>{tradeWord(t.key)} ({t.n})</option>
+            ))}
           </select></label>
-          <label>Source<select multiple size={5} style={{ minWidth: 130 }} value={pickedSources}
-            title="Where the lead came from; any of the sources picked, Ctrl or ⌘-click for several"
-            onChange={(e) => setPickedSources(Array.from(e.target.selectedOptions, (o) => o.value))}>
-            {sources.map((s) => <option key={s.key} value={s.key}>{s.key} ({s.n})</option>)}
-          </select></label>
-          <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
-            <option value="">any</option><option>A</option><option>B</option><option>C</option>
+          <label>Source<select value="" onChange={(e) => pickSource(e.target.value)} title="Where the lead came from; pick as many as you like">
+            <option value="">{pickedSources.length ? 'add another source…' : 'any source — or pick…'}</option>
+            {(counts?.sources ?? []).filter((s) => !pickedSources.includes(s.key)).map((s) => (
+              <option key={s.key} value={s.key}>{s.key} ({s.n})</option>
+            ))}
           </select></label>
           <label>Intent<select value={form.intent} onChange={(e) => setForm({ ...form, intent: e.target.value })}>
             {INTENTS.map((s) => <option key={s} value={s}>{s || 'any'}</option>)}
@@ -339,6 +357,36 @@ export default function Lists() {
           </label>
           <button className="btn primary" disabled={busy}>{busy ? 'Building…' : 'Build list'}</button>
         </div>
+        {(pickedTrades.length > 0 || pickedSources.length > 0) && (
+          <div className="pickrow">
+            {pickedTrades.length > 0 && (
+              <span className="picks"><span className="muted small">Trades (any of):</span>
+                {pickedTrades.map((k) => (
+                  <span key={k} className="pickchip">{tradeWord(k)} <span className="muted">({countOf(counts?.trades, k)})</span>
+                    <button type="button" aria-label={`Remove ${tradeWord(k)}`} onClick={() => setPickedTrades(pickedTrades.filter((x) => x !== k))}>×</button>
+                  </span>
+                ))}
+                <button type="button" className="btn ghost small" onClick={() => setPickedTrades([])}>clear</button>
+              </span>
+            )}
+            {pickedSources.length > 0 && (
+              <span className="picks"><span className="muted small">Sources (any of):</span>
+                {pickedSources.map((k) => (
+                  <span key={k} className="pickchip">{k} <span className="muted">({countOf(counts?.sources, k)})</span>
+                    <button type="button" aria-label={`Remove ${k}`} onClick={() => setPickedSources(pickedSources.filter((x) => x !== k))}>×</button>
+                  </span>
+                ))}
+                <button type="button" className="btn ghost small" onClick={() => setPickedSources([])}>clear</button>
+              </span>
+            )}
+          </div>
+        )}
+        {counts && (
+          <p className="small muted" style={{ margin: '8px 0 0' }}>
+            {counts.total.toLocaleString()} lead{counts.total === 1 ? '' : 's'} match these rules
+            {form.intent || form.minScore || form.mobileFirst ? ' before the intent, score and mobile rules' : ''}; the list takes up to {Number(form.limit) || 200}.
+          </p>
+        )}
         {agentError && <p className="warnline" style={{ marginBottom: 0 }}>{agentError}</p>}
         {msg && <p className="small" style={{ marginBottom: 0 }}>{msg}</p>}
       </form>

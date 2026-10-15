@@ -484,3 +484,13 @@ table.data tr.thin .minibar i { opacity: 0.45; }
 .synccard .statchips { margin-bottom: 8px; }
 .synccard .chip b { font-weight: 700; }
 .synccard .runs td.detail { max-width: 520px; white-space: normal; }
+
+/* ---------- the list builder's picks (0041) ---------- */
+.pickrow { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; }
+.picks { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pickchip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 9px; border-radius: 6px;
+  background: var(--chip); font-size: 13px; font-weight: 600;
+}
+.pickchip button { border: 0; background: transparent; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; color: var(--muted); }
+.pickchip button:hover { color: var(--bad); }
