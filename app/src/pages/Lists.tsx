@@ -50,6 +50,11 @@ const STATUSES: { key: string; label: string }[] = [
 ]
 const KINDS = ['', 'manual', 'radar', 'recycle', 'referrals']
 
+/** A trade key the way a person reads it: roofing, decks fencing, drywall paint. */
+function tradeWord(key: string): string {
+  return key.replace(/_/g, ' ')
+}
+
 /** The Status column says the same word the Status filter and the close button do.
  *  The database calls a finished list 'done' and everything a manager reads calls
  *  it "closed", and a column full of "done" under a filter called "closed" reads
@@ -86,6 +91,12 @@ export default function Lists() {
   const [addQ, setAddQ] = useState('')
   const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
   const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
+  // 0039: the trades on file, with how many dialable leads each holds; a list can take any of them
+  const [trades, setTrades] = useState<{ key: string; n: number }[]>([])
+  const [pickedTrades, setPickedTrades] = useState<string[]>([])
+  // 0040: where the leads came from (the scraper's source), with dialable counts
+  const [sources, setSources] = useState<{ key: string; n: number }[]>([])
+  const [pickedSources, setPickedSources] = useState<string[]>([])
 
   const query = `${filter.status}|${filter.kind}|${page}`
   // the rows on screen answer an older question than the filters now ask
@@ -141,6 +152,11 @@ export default function Lists() {
   }, [filter.status, filter.kind, page, query, reload])
 
   useEffect(() => {
+    supabase.rpc('lead_categories').then(({ data }) => setTrades((data ?? []) as { key: string; n: number }[]))
+    supabase.rpc('lead_sources').then(({ data }) => setSources((data ?? []) as { key: string; n: number }[]))
+  }, [reload])
+
+  useEffect(() => {
     supabase.from('profiles').select('*').eq('active', true).order('name')
       .then(({ data, error: e }) => {
         if (e) { setAgentError(`The agents did not load, so this list cannot be given to one yet: ${e.message}`); return }
@@ -161,6 +177,8 @@ export default function Lists() {
     if (form.state) rules.state = form.state
     // 0038: the first three digits of the number, one area code or several (305,786)
     if (form.areaCode.trim()) rules.area_code = form.areaCode.trim()
+    if (pickedTrades.length) rules.category = pickedTrades.join(',')
+    if (pickedSources.length) rules.source = pickedSources.join(',')
     if (form.tier) rules.tier = form.tier
     if (form.intent) rules.intent = form.intent
     if (form.minScore) rules.min_score = Number(form.minScore)
@@ -259,6 +277,19 @@ export default function Lists() {
     loadItems(open); refresh()
   }
 
+  // 0039: a lead closed on another platform is marked do-not-call here, by hand,
+  // through the same path the sync uses: every record on that number leaves every
+  // queue and list, and the console is told
+  async function dnc(it: ListLead) {
+    if (!it.phone) { setItemsErr('This lead has no number to suppress.'); return }
+    if (!window.confirm(`Mark ${it.name} (${it.phone}) do-not-call? It leaves every list and queue for good, and the console is told.`)) return
+    const { error: e } = await supabase.rpc('add_suppression', { p_phone: it.phone, p_reason: 'dnc' })
+    if (e) { setItemsErr(e.message); return }
+    setItemsErr(null)
+    if (open) loadItems(open)
+    refresh()
+  }
+
   async function removeLead(leadId: number) {
     if (!open) return
     const { error: e } = await supabase.rpc('list_remove_lead', { p_list: open, p_lead: leadId })
@@ -285,6 +316,16 @@ export default function Lists() {
           </select></label>
           <label>Area code<input style={{ width: 120 }} value={form.areaCode} onChange={(e) => setForm({ ...form, areaCode: e.target.value })}
             placeholder="305 or 305,786" inputMode="numeric" title="The first three digits of the number; several separated by commas" /></label>
+          <label>Trade<select multiple size={5} style={{ minWidth: 170 }} value={pickedTrades}
+            title="Any of the trades picked; Ctrl or ⌘-click for several"
+            onChange={(e) => setPickedTrades(Array.from(e.target.selectedOptions, (o) => o.value))}>
+            {trades.map((t) => <option key={t.key} value={t.key}>{tradeWord(t.key)} ({t.n})</option>)}
+          </select></label>
+          <label>Source<select multiple size={5} style={{ minWidth: 130 }} value={pickedSources}
+            title="Where the lead came from; any of the sources picked, Ctrl or ⌘-click for several"
+            onChange={(e) => setPickedSources(Array.from(e.target.selectedOptions, (o) => o.value))}>
+            {sources.map((s) => <option key={s.key} value={s.key}>{s.key} ({s.n})</option>)}
+          </select></label>
           <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
             <option value="">any</option><option>A</option><option>B</option><option>C</option>
           </select></label>
@@ -387,6 +428,9 @@ export default function Lists() {
                                     <td className="rowactions">
                                       {(l.status === 'active' || l.status === 'draft') && !it.served_at && (
                                         <button className="btn ghost small" onClick={() => removeLead(it.lead_id)}>remove</button>
+                                      )}
+                                      {it.lead_state !== 'suppressed' && it.lead_state !== 'handoff' && (
+                                        <button className="btn ghost small" title="Do not call: leaves every list and queue" onClick={() => dnc(it)}>DNC</button>
                                       )}
                                     </td>
                                   </tr>
