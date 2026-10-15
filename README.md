@@ -70,7 +70,9 @@ project's public URL and publishable key.
   match before you build.
   Opening a list shows its leads; **DNC** on a lead marks the number
   do-not-call by hand (a business closed elsewhere), so it leaves every list
-  and queue and the console is told.
+  and queue and the console is told. **Chance given** and **Sale** record a
+  business that called back after it was dialed: a handoff without a dial,
+  credited to the list's agent, the number held for good, the console told.
 - Agents: **D** dials · **S** skips (the lead sits out an hour) · non-connects
   are one key (**N/V/B/X**) · **C** opens the outcome popup (**R** there saves
   a referral) · **P** pauses · everything advances automatically. Mouse works
