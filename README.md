@@ -61,7 +61,8 @@ project's public URL and publishable key.
 - Manager builds/assigns lists (Lists tab) — or agents pull from the general
   pool ordered by score. A list assigned to an agent is theirs alone; an
   unassigned list is shared by everyone. The builder's rules: state, trade
-  (any of the ones picked, with each trade's dialable count beside it), tier,
+  (any of the ones picked, with each trade's dialable count beside it), source
+  (where the scraper found the lead: gmaps, registry, angi…; any of), tier,
   intent, minimum score, mobile numbers only, and area code (the first three
   digits of the number; one, or several separated by commas: `305,786`).
   Opening a list shows its leads; **DNC** on a lead marks the number

@@ -94,6 +94,9 @@ export default function Lists() {
   // 0039: the trades on file, with how many dialable leads each holds; a list can take any of them
   const [trades, setTrades] = useState<{ key: string; n: number }[]>([])
   const [pickedTrades, setPickedTrades] = useState<string[]>([])
+  // 0040: where the leads came from (the scraper's source), with dialable counts
+  const [sources, setSources] = useState<{ key: string; n: number }[]>([])
+  const [pickedSources, setPickedSources] = useState<string[]>([])
 
   const query = `${filter.status}|${filter.kind}|${page}`
   // the rows on screen answer an older question than the filters now ask
@@ -150,6 +153,7 @@ export default function Lists() {
 
   useEffect(() => {
     supabase.rpc('lead_categories').then(({ data }) => setTrades((data ?? []) as { key: string; n: number }[]))
+    supabase.rpc('lead_sources').then(({ data }) => setSources((data ?? []) as { key: string; n: number }[]))
   }, [reload])
 
   useEffect(() => {
@@ -174,6 +178,7 @@ export default function Lists() {
     // 0038: the first three digits of the number, one area code or several (305,786)
     if (form.areaCode.trim()) rules.area_code = form.areaCode.trim()
     if (pickedTrades.length) rules.category = pickedTrades.join(',')
+    if (pickedSources.length) rules.source = pickedSources.join(',')
     if (form.tier) rules.tier = form.tier
     if (form.intent) rules.intent = form.intent
     if (form.minScore) rules.min_score = Number(form.minScore)
@@ -315,6 +320,11 @@ export default function Lists() {
             title="Any of the trades picked; Ctrl or ⌘-click for several"
             onChange={(e) => setPickedTrades(Array.from(e.target.selectedOptions, (o) => o.value))}>
             {trades.map((t) => <option key={t.key} value={t.key}>{tradeWord(t.key)} ({t.n})</option>)}
+          </select></label>
+          <label>Source<select multiple size={5} style={{ minWidth: 130 }} value={pickedSources}
+            title="Where the lead came from; any of the sources picked, Ctrl or ⌘-click for several"
+            onChange={(e) => setPickedSources(Array.from(e.target.selectedOptions, (o) => o.value))}>
+            {sources.map((s) => <option key={s.key} value={s.key}>{s.key} ({s.n})</option>)}
           </select></label>
           <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
             <option value="">any</option><option>A</option><option>B</option><option>C</option>
