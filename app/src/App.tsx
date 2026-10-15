@@ -4,6 +4,7 @@ import type { Session } from '@supabase/supabase-js'
 import { supabase, heartbeatOffline } from './lib/supabase'
 import type { Profile } from './lib/types'
 import Login from './pages/Login'
+import { clockProblem } from './lib/clock'
 import Dial from './pages/Dial'
 
 // Item 55: an agent's day is the Dial page, so that is the whole first load;
@@ -24,6 +25,8 @@ export default function App() {
   const [profileFor, setProfileFor] = useState<string | null>(null) // user id the profile was fetched for
   const [ready, setReady] = useState(false)
   const [stale, setStale] = useState(false)
+  // a session this computer's clock cannot keep: signed out at once, with the reason
+  const [clockNotice, setClockNotice] = useState<string | null>(null)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -36,6 +39,17 @@ export default function App() {
 
   useEffect(() => {
     if (!session) { setProfile(null); setProfileFor(null); return }
+    // Before anything is asked of the server: a clock more than a few minutes off
+    // would make this session refresh itself in a loop until the auth server cut
+    // it off, which reads as being thrown out with no explanation. Leave now and
+    // say why instead.
+    const problem = clockProblem(session.access_token)
+    if (problem) {
+      setClockNotice(problem)
+      supabase.auth.signOut()
+      return
+    }
+    setClockNotice(null)
     const uid = session.user.id
     supabase.from('profiles').select('*').eq('id', uid).single()
       .then(({ data }) => { setProfile(data as Profile | null); setProfileFor(uid) })
@@ -77,7 +91,7 @@ export default function App() {
   }, [])
 
   if (!ready) return null
-  if (!session) return <Login />
+  if (!session) return <Login notice={clockNotice} />
   // The manager routes only exist once the role is known; routing before that
   // sent a manager who reloaded a manager page to /dial.
   if (profileFor !== session.user.id) return null
