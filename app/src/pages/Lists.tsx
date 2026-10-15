@@ -306,6 +306,20 @@ export default function Lists() {
     refresh()
   }
 
+  // 0042: a business that called back and gave a chance (or bought) after it was
+  // dialed: the outcome is recorded without a dial, credited to the list's agent
+  async function chance(it: ListLead, l: ListRow, kind: 'chance_website' | 'sale_closed') {
+    const what = kind === 'chance_website' ? 'gave the chance to build their website' : 'closed a sale'
+    const who = l.profiles?.name ?? 'you'
+    const summary = window.prompt(`${it.name} called back and ${what}? It is credited to ${who}, the number is held for good, and the console is told. A note for the handoff (optional):`)
+    if (summary === null) return
+    const { error: e } = await supabase.rpc('record_handoff', { p_lead_id: it.lead_id, p_kind: kind, p_summary: summary || null, p_agent: l.agent_id })
+    if (e) { setItemsErr(e.message); return }
+    setItemsErr(null)
+    if (open) loadItems(open)
+    refresh()
+  }
+
   async function removeLead(leadId: number) {
     if (!open) return
     const { error: e } = await supabase.rpc('list_remove_lead', { p_list: open, p_lead: leadId })
@@ -478,7 +492,11 @@ export default function Lists() {
                                         <button className="btn ghost small" onClick={() => removeLead(it.lead_id)}>remove</button>
                                       )}
                                       {it.lead_state !== 'suppressed' && it.lead_state !== 'handoff' && (
-                                        <button className="btn ghost small" title="Do not call: leaves every list and queue" onClick={() => dnc(it)}>DNC</button>
+                                        <>
+                                          <button className="btn ghost small" title="Do not call: leaves every list and queue" onClick={() => dnc(it)}>DNC</button>
+                                          <button className="btn ghost small" title="They called back and gave a chance: recorded as a handoff, credited to the list's agent" onClick={() => chance(it, l, 'chance_website')}>Chance given</button>
+                                          <button className="btn ghost small" title="They called back and bought: recorded as a sale, credited to the list's agent" onClick={() => chance(it, l, 'sale_closed')}>Sale</button>
+                                        </>
                                       )}
                                     </td>
                                   </tr>
