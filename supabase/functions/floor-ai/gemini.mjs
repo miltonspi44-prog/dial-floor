@@ -117,24 +117,43 @@ export function parseBrief(text) {
   return brief
 }
 
+/** How hard the model thinks before it answers. Gemini 3 and later think at
+ *  medium or high unless told otherwise, which can run past the function's
+ *  time limit on a prompt this size; low is plenty for reading a table of rates. */
+export function thinkingFor(name) {
+  const v = /gemini-(\d+)(?:\.(\d+))?/.exec(String(name))
+  if (!v) return null
+  const major = Number(v[1]), minor = Number(v[2] ?? 0)
+  if (major >= 3) return { thinkingLevel: 'LOW' }
+  if (major === 2 && minor >= 5) return { thinkingBudget: 2048 }
+  return null
+}
+
 async function call(fetchFn, url, apiKey, init, timeoutMs) {
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), timeoutMs)
   try {
     return await fetchFn(url, { ...init, headers: { ...(init?.headers ?? {}), 'x-goog-api-key': apiKey }, signal: ctl.signal })
   } catch (e) {
-    if (e?.name === 'AbortError') throw new GeminiError(`Gemini did not answer within ${Math.round(timeoutMs / 1000)} seconds.`)
+    const who = /models\/([^:?]+):/.exec(url)?.[1] ?? 'Gemini'
+    if (e?.name === 'AbortError') throw new GeminiError(`${who} did not answer within ${Math.round(timeoutMs / 1000)} seconds.`)
     throw new GeminiError(`Could not reach Gemini: ${e?.message ?? e}`)
   } finally { clearTimeout(timer) }
 }
 
+async function errorMessage(res) {
+  try { const j = await res.json(); return j?.error?.message ?? '' } catch { return '' }
+}
+
+function explainStatus(status, msg) {
+  if (status === 400 && /api key/i.test(msg)) return new GeminiError('Gemini refused the API key. Check GEMINI_API_KEY in Supabase → Edge Functions → Secrets.', 400)
+  if (status === 401 || status === 403) return new GeminiError(`Gemini refused the request (${status}): ${msg || 'the key may lack access to this model'}`, status)
+  if (status === 429) return new GeminiError(`Gemini's quota for this key is used up for now (429): ${msg}`, 429)
+  return new GeminiError(`Gemini answered ${status}${msg ? `: ${msg}` : ''}`, status)
+}
+
 async function explain(res) {
-  let msg = ''
-  try { const j = await res.json(); msg = j?.error?.message ?? '' } catch { /* not JSON */ }
-  if (res.status === 400 && /api key/i.test(msg)) return new GeminiError('Gemini refused the API key. Check GEMINI_API_KEY in Supabase → Edge Functions → Secrets.', 400)
-  if (res.status === 401 || res.status === 403) return new GeminiError(`Gemini refused the request (${res.status}): ${msg || 'the key may lack access to this model'}`, res.status)
-  if (res.status === 429) return new GeminiError(`Gemini's quota for this key is used up for now (429): ${msg}`, 429)
-  return new GeminiError(`Gemini answered ${res.status}${msg ? `: ${msg}` : ''}`, res.status)
+  return explainStatus(res.status, await errorMessage(res))
 }
 
 export async function newestFlash(apiKey, fetchFn = fetch, timeoutMs = 20_000) {
@@ -147,24 +166,33 @@ export async function newestFlash(apiKey, fetchFn = fetch, timeoutMs = 20_000) {
 
 /** Ask Gemini for the floor analysis. Returns { model, brief }. A configured
  *  model that no longer exists falls back to the newest Flash, and says so. */
-export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, timeoutMs = 90_000 }) {
+export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, timeoutMs = 110_000 }) {
   if (!apiKey) throw new GeminiError('GEMINI_API_KEY is not set.')
   const configured = model ? (String(model).startsWith('models/') ? String(model) : `models/${model}`) : null
   let name = configured ?? await newestFlash(apiKey, fetchFn)
-  const body = JSON.stringify({
+  const prompt = buildPrompt(snapshot)
+  // temperature is left at the model's default, as Google asks for Gemini 3 and later
+  const body = (n, think) => JSON.stringify({
     systemInstruction: { parts: [{ text: SYSTEM }] },
-    contents: [{ role: 'user', parts: [{ text: buildPrompt(snapshot) }] }],
-    // newer Flash models think before they answer, and the thinking counts against this cap
-    generationConfig: { temperature: 0.3, responseMimeType: 'application/json', maxOutputTokens: 32768 },
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    // the thinking counts against maxOutputTokens, so the cap leaves room for it
+    generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 32768,
+                        ...(think && thinkingFor(n) ? { thinkingConfig: thinkingFor(n) } : {}) },
   })
-  const ask = (n) => call(fetchFn, `${API}/${n}:generateContent`, apiKey,
-    { method: 'POST', headers: { 'content-type': 'application/json' }, body }, timeoutMs)
+  const ask = (n, think = true) => call(fetchFn, `${API}/${n}:generateContent`, apiKey,
+    { method: 'POST', headers: { 'content-type': 'application/json' }, body: body(n, think) }, timeoutMs)
   let res = await ask(name)
   let note = null
   if (res.status === 404 && configured) {
     name = await newestFlash(apiKey, fetchFn)
     note = `${configured.replace('models/', '')} is not available, so ${name.replace('models/', '')} was used`
     res = await ask(name)
+  }
+  // a model that does not take this thinking setting is asked again without it
+  if (res.status === 400 && thinkingFor(name)) {
+    const msg = await errorMessage(res)
+    if (!/thinking/i.test(msg)) throw explainStatus(400, msg)
+    res = await ask(name, false)
   }
   if (!res.ok) throw await explain(res)
   const j = await res.json()

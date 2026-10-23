@@ -95,3 +95,34 @@ test('an answer cut off by the output cap is reported as such, not as broken JSO
   const f = fakeFetch([[/generateContent$/, { status: 200, body: cut }]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: f }), /ran out of room/)
 })
+
+test('Gemini 3 and later are asked to think lightly, 2.5 gets a budget, and temperature is left alone', async () => {
+  const seen = []
+  const f = fakeFetch([[/generateContent$/, { status: 200, body: answer }]], seen)
+  await generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, fetchFn: f })
+  await generateBrief({ apiKey: 'k', model: 'gemini-2.5-flash', snapshot: {}, fetchFn: f })
+  const [g3, g25] = seen.map((s) => JSON.parse(s.init.body).generationConfig)
+  assert.deepEqual(g3.thinkingConfig, { thinkingLevel: 'LOW' })
+  assert.deepEqual(g25.thinkingConfig, { thinkingBudget: 2048 })
+  assert.ok(!('temperature' in g3) && !('temperature' in g25))
+})
+
+test('a model that refuses the thinking setting is asked again without it', async () => {
+  const seen = []
+  const f = fakeFetch([[/generateContent$/, (url, init) => JSON.parse(init.body).generationConfig.thinkingConfig
+    ? { status: 400, body: { error: { message: 'Thinking level is not supported for this model.' } } }
+    : { status: 200, body: answer }]], seen)
+  const out = await generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: f })
+  assert.equal(out.brief.headline, 'h')
+  assert.equal(seen.length, 2)
+  const other = fakeFetch([[/generateContent$/, { status: 400, body: { error: { message: 'Request contains an invalid argument.' } } }]])
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: other }), /invalid argument/)
+})
+
+test('a model too slow to answer is named in the message', async () => {
+  const slow = async (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => {
+    const e = new Error('aborted'); e.name = 'AbortError'; reject(e)
+  }))
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, fetchFn: slow, timeoutMs: 20 }),
+    /gemini-3\.8-flash did not answer within 0 seconds/)
+})
