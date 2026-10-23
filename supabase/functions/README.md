@@ -27,6 +27,11 @@ with 401 and every call outcome silently stops arriving.
   sync-console already uses; secrets are shared by every function in the project.
   Without the key the function records a failed run saying so, and the lead
   scores and the matched radar keep working: they never needed it.
+  When the newest Flash model is busy, gone or out of quota it moves on to the
+  next newest (up to four). If none answer, POST `{"probe": true}` with the
+  cron secret, e.g. via `net.http_post` reading it from Vault: the reply (in
+  `net._http_response`) lists the key's Flash models and how each one answered
+  a one-word prompt.
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` arrive built in on every function.
 

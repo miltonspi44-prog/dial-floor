@@ -53,16 +53,23 @@ export function buildPrompt(snapshot) {
   ].join('\n')
 }
 
+/** Every stable "gemini-N-flash" model in a models listing, newest first. */
+export function flashModels(models) {
+  return (models ?? [])
+    .filter((m) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
+    .map((m) => ({ name: String(m.name), v: /^models\/gemini-(\d+(?:\.\d+)?)-flash$/.exec(String(m.name)) }))
+    .filter((x) => x.v)
+    .sort((a, b) => Number(b.v[1]) - Number(a.v[1]))
+    .map((x) => x.name)
+}
+
 /** The newest stable "gemini-N-flash" model this key can call, else any Flash
  *  model that is not a preview, else null. Names change every few months, so the
  *  default is found rather than written down. */
 export function pickModel(models) {
+  const stable = flashModels(models)
+  if (stable.length) return stable[0]
   const usable = (models ?? []).filter((m) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
-  const stable = usable
-    .map((m) => ({ name: String(m.name), v: /^models\/gemini-(\d+(?:\.\d+)?)-flash$/.exec(String(m.name)) }))
-    .filter((x) => x.v)
-    .sort((a, b) => Number(b.v[1]) - Number(a.v[1]))
-  if (stable.length) return stable[0].name
   const any = usable.find((m) => /gemini.*flash/.test(m.name) && !/(preview|exp|tts|image|lite|live|embed|audio)/.test(m.name))
   return any ? String(any.name) : null
 }
@@ -207,20 +214,59 @@ async function explain(res) {
   return explainStatus(res.status, await errorMessage(res))
 }
 
-export async function newestFlash(apiKey, fetchFn = fetch, timeoutMs = 20_000) {
+async function listModels(apiKey, fetchFn, timeoutMs = 20_000) {
   const res = await call(fetchFn, `${API}/models?pageSize=200`, apiKey, { method: 'GET' }, timeoutMs)
   if (!res.ok) throw await explain(res)
-  const name = pickModel((await res.json())?.models)
-  if (!name) throw new GeminiError('This key can reach no Gemini Flash model. Set one in Settings → AI → model.')
-  return name
+  return (await res.json())?.models ?? []
 }
 
-/** Ask Gemini for the floor analysis. Returns { model, brief }. A configured
- *  model that no longer exists falls back to the newest Flash, and says so. */
-export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, timeoutMs = 110_000 }) {
+/** For a model that will not answer: which Flash models this key can see, and
+ *  how long a few of them take to say one word, with and without the thinking
+ *  setting. Names, statuses and timings only. */
+export async function probe({ apiKey, fetchFn = fetch, timeoutMs = 25_000 }) {
+  const out = { tries: [] }
+  let t = Date.now()
+  const res = await call(fetchFn, `${API}/models?pageSize=200`, apiKey, { method: 'GET' }, timeoutMs)
+  out.list_ms = Date.now() - t
+  if (!res.ok) { out.list_error = (await explain(res)).message; return out }
+  const models = ((await res.json())?.models ?? []).filter((m) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
+  out.flash = models.map((m) => String(m.name).replace('models/', '')).filter((n) => /flash/.test(n))
+  const picked = pickModel(models)
+  out.picked = picked && picked.replace('models/', '')
+  const others = models.map((m) => String(m.name))
+    .filter((n) => n !== picked && /^models\/gemini-\d+(\.\d+)?-flash$/.test(n)).slice(0, 2)
+  const plan = [...(picked ? [[picked, true], [picked, false]] : []), ...others.map((n) => [n, true])]
+  out.tries = await Promise.all(plan.map(async ([n, think]) => {
+    const t0 = Date.now()
+    const row = { model: n.replace('models/', ''), thinking: think && thinkingFor(n) ? thinkingFor(n) : null }
+    try {
+      const r = await call(fetchFn, `${API}/${n}:generateContent`, apiKey, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Reply with the single word ok.' }] }],
+                               generationConfig: { maxOutputTokens: 1024, ...(row.thinking ? { thinkingConfig: row.thinking } : {}) } }) }, timeoutMs)
+      row.status = r.status
+      if (r.ok) {
+        const j = await r.json()
+        row.finish = j?.candidates?.[0]?.finishReason ?? null
+        row.text = (j?.candidates?.[0]?.content?.parts ?? []).map((p) => p?.text ?? '').join('').slice(0, 40)
+      } else row.error = (await errorMessage(r)).slice(0, 200)
+    } catch (e) { row.error = e?.message ?? String(e) }
+    row.ms = Date.now() - t0
+    return row
+  }))
+  return out
+}
+
+// "this model, not now" rather than "this request is wrong": try the next one
+const BUSY = { 404: 'was not available (404)', 429: 'had no quota left (429)', 500: 'failed (500)', 503: 'was busy (503)', 504: 'timed out (504)' }
+
+/** Ask Gemini for the floor analysis. Returns { model, brief }. The newest
+ *  Flash model is asked first (or the one set in Settings); one that is busy,
+ *  gone, out of quota or slow to start is passed over for the next newest, up
+ *  to four, all inside one time limit. The analysis says when that happened. */
+export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, timeoutMs = 110_000, startMs = 30_000 }) {
   if (!apiKey) throw new GeminiError('GEMINI_API_KEY is not set.')
+  const deadline = Date.now() + timeoutMs
   const configured = model ? (String(model).startsWith('models/') ? String(model) : `models/${model}`) : null
-  let name = configured ?? await newestFlash(apiKey, fetchFn)
   const prompt = buildPrompt(snapshot)
   // temperature is left at the model's default, as Google asks for Gemini 3 and later
   const body = (n, think) => JSON.stringify({
@@ -230,32 +276,64 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
     generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 32768,
                         ...(think && thinkingFor(n) ? { thinkingConfig: thinkingFor(n) } : {}) },
   })
-  // one clock for the whole answer, streamed, not just until it starts
-  const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), timeoutMs)
-  try {
-    const ask = (n, think = true) => call(fetchFn, `${API}/${n}:streamGenerateContent?alt=sse`, apiKey,
-      { method: 'POST', headers: { 'content-type': 'application/json' }, body: body(n, think) }, timeoutMs, ctl.signal)
-    let res = await ask(name)
-    let note = null
-    if (res.status === 404 && configured) {
-      name = await newestFlash(apiKey, fetchFn)
-      note = `${configured.replace('models/', '')} is not available, so ${name.replace('models/', '')} was used`
-      res = await ask(name)
+
+  let listed = null
+  const more = async () => {
+    if (!listed) {
+      const all = await listModels(apiKey, fetchFn)
+      listed = flashModels(all)
+      if (!listed.length && pickModel(all)) listed = [pickModel(all)]
     }
-    // a model that does not take this thinking setting is asked again without it
-    if (res.status === 400 && thinkingFor(name)) {
-      const msg = await errorMessage(res)
-      if (!/thinking/i.test(msg)) throw explainStatus(400, msg)
-      res = await ask(name, false)
+    return listed
+  }
+
+  // a model that has not started answering within startMs is passed over
+  const start = async (n, think, ctl) => {
+    const ms = Math.max(0, Math.min(startMs, deadline - Date.now()))
+    const timer = setTimeout(() => ctl.abort(), ms)
+    try {
+      return await fetchFn(`${API}/${n}:streamGenerateContent?alt=sse`, { method: 'POST', signal: ctl.signal,
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: body(n, think) })
+    } catch (e) {
+      if (e?.name === 'AbortError') return { passed: `did not start answering within ${Math.round(ms / 1000)} seconds` }
+      throw new GeminiError(`Could not reach Gemini: ${e?.message ?? e}`)
+    } finally { clearTimeout(timer) }
+  }
+
+  const attempt = async (n) => {
+    const who = n.replace('models/', '')
+    const ctl = new AbortController()
+    const stop = setTimeout(() => ctl.abort(), Math.max(0, deadline - Date.now()))
+    try {
+      let res = await start(n, true, ctl)
+      // a model that does not take this thinking setting is asked again without it
+      if (res.status === 400 && thinkingFor(n)) {
+        const msg = await errorMessage(res)
+        if (!/thinking/i.test(msg)) throw explainStatus(400, msg)
+        res = await start(n, false, ctl)
+      }
+      if (res.passed) return res
+      if (BUSY[res.status]) { res.body?.cancel().catch(() => {}); return { passed: BUSY[res.status] } }
+      if (!res.ok) throw await explain(res)
+      const { text, finish, blocked } = await readAnswer(res, who, timeoutMs)
+      if (!text.trim()) throw new GeminiError(`${who} returned no analysis (${finish ?? blocked ?? 'no text'}).`)
+      if (finish === 'MAX_TOKENS' && !answered(text)) throw new GeminiError('Gemini ran out of room before finishing the analysis. Ask again.')
+      return { model: who, brief: parseBrief(text) }
+    } finally { clearTimeout(stop) }
+  }
+
+  const queue = configured ? [configured] : [...await more()]
+  if (!queue.length) throw new GeminiError('This key can reach no Gemini Flash model. Set one in Settings → AI → model.')
+  const passed = []
+  for (let i = 0; i < queue.length && passed.length < 4; i++) {
+    const out = await attempt(queue[i])
+    if (out.brief) {
+      if (passed.length) out.brief.cautions = [`${passed[0]}, so ${out.model} wrote this analysis`, ...out.brief.cautions].slice(0, 6)
+      return { model: out.model, brief: out.brief }
     }
-    if (!res.ok) throw await explain(res)
-    const who = name.replace('models/', '')
-    const { text, finish, blocked } = await readAnswer(res, who, timeoutMs)
-    if (!text.trim()) throw new GeminiError(`Gemini returned no analysis (${finish ?? blocked ?? 'no text'}).`)
-    if (finish === 'MAX_TOKENS' && !answered(text)) throw new GeminiError('Gemini ran out of room before finishing the analysis. Ask again.')
-    const brief = parseBrief(text)
-    if (note) brief.cautions = [note, ...brief.cautions].slice(0, 6)
-    return { model: who, brief }
-  } finally { clearTimeout(timer) }
+    passed.push(`${queue[i].replace('models/', '')} ${out.passed}`)
+    if (deadline - Date.now() < 5_000) break
+    if (i === queue.length - 1 && configured && queue.length === 1) queue.push(...(await more()).filter((n) => n !== configured))
+  }
+  throw new GeminiError(`No Gemini model could write the analysis just now: ${passed.join('; ')}. Ask again in a few minutes.`)
 }

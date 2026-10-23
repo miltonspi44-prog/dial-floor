@@ -16,7 +16,7 @@
 //   CRON_SECRET     already set for sync-console; the same value is in Vault
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY arrive built in.
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { generateBrief } from "./gemini.mjs";
+import { generateBrief, probe } from "./gemini.mjs";
 
 const supa = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -60,6 +60,8 @@ Deno.serve(async (req) => {
     await record({ ok: false, error: "GEMINI_API_KEY is not set. Add it in Supabase → Edge Functions → Secrets, then ask again." });
     return json({ ok: false, why: "no GEMINI_API_KEY" });
   }
+  // {"probe": true}: how the key's Flash models respond, for when one will not
+  if (body.probe === true) return json(await probe({ apiKey }));
 
   try {
     const { data: snapshot, error: snapErr } = await supa.rpc("ai_floor_snapshot");

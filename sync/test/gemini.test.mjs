@@ -1,7 +1,7 @@
 // floor-ai's Gemini client, without a key: a fake fetch stands in for Google.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pickModel, parseBrief, cleanRules, buildPrompt, generateBrief, GeminiError } from '../../supabase/functions/floor-ai/gemini.mjs'
+import { pickModel, parseBrief, cleanRules, buildPrompt, generateBrief, probe, GeminiError } from '../../supabase/functions/floor-ai/gemini.mjs'
 
 const gen = ['generateContent']
 
@@ -83,14 +83,16 @@ test('a configured model that is gone falls back to the newest Flash and says so
   ])
   const out = await generateBrief({ apiKey: 'k', model: 'gemini-1.0-flash', snapshot: {}, fetchFn: f })
   assert.equal(out.model, 'gemini-3-flash')
-  assert.match(out.brief.cautions[0], /gemini-1\.0-flash is not available/)
+  assert.match(out.brief.cautions[0], /gemini-1\.0-flash was not available \(404\), so gemini-3-flash wrote this analysis/)
 })
 
 test('a refused key, a spent quota and a missing key each say what to do', async () => {
   const bad = fakeFetch([[/GenerateContent/, { status: 400, body: { error: { message: 'API key not valid. Please pass a valid API key.' } } }]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: bad }), /refused the API key.*Secrets/)
-  const quota = fakeFetch([[/GenerateContent/, { status: 429, body: { error: { message: 'Resource exhausted' } } }]])
-  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: quota }), /quota/)
+  const quota = fakeFetch([
+    [/\/models\?/, { status: 200, body: { models: [{ name: 'models/gemini-3-flash', supportedGenerationMethods: gen }] } }],
+    [/GenerateContent/, { status: 429, body: { error: { message: 'Resource exhausted' } } }]])
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: quota }), /gemini-3-flash had no quota left \(429\)/)
   await assert.rejects(generateBrief({ apiKey: '', model: '', snapshot: {} }), /GEMINI_API_KEY is not set/)
 })
 
@@ -127,7 +129,7 @@ test('a model too slow to answer is named in the message', async () => {
     const e = new Error('aborted'); e.name = 'AbortError'; reject(e)
   }))
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, fetchFn: slow, timeoutMs: 20 }),
-    /gemini-3\.8-flash did not answer within 0 seconds/)
+    /gemini-3\.8-flash did not start answering within 0 seconds/)
 })
 
 // a stream that sends these events and then stays open until the request is aborted
@@ -165,4 +167,49 @@ test('a model trailing off into blank space mid-answer is stopped, and one too s
     fetchFn: hanging([piece('{"headline":"h"')]) }), /gemini-3\.8-flash was still writing after 0 seconds \(15 characters so far\)/)
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, timeoutMs: 30,
     fetchFn: hanging([]) }), /gemini-3\.8-flash sent nothing in 0 seconds/)
+})
+
+test('the probe reports each model it tried, with timings, and never the key', async () => {
+  const f = fakeFetch([
+    [/\/models\?/, { status: 200, body: { models: [
+      { name: 'models/gemini-3.8-flash', supportedGenerationMethods: gen },
+      { name: 'models/gemini-3.6-flash', supportedGenerationMethods: gen },
+      { name: 'models/gemini-2.5-flash', supportedGenerationMethods: gen }] } }],
+    [/gemini-3\.8-flash:generateContent$/, { status: 503, body: { error: { message: 'The model is overloaded.' } } }],
+    [/:generateContent$/, { status: 200, body: { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }] } }],
+  ])
+  const out = await probe({ apiKey: 'k-secret', fetchFn: f })
+  assert.equal(out.picked, 'gemini-3.8-flash')
+  assert.deepEqual(out.tries.map((t) => [t.model, t.status]), [['gemini-3.8-flash', 503], ['gemini-3.8-flash', 503], ['gemini-3.6-flash', 200], ['gemini-2.5-flash', 200]])
+  assert.equal(out.tries[1].thinking, null)
+  assert.match(out.tries[0].error, /overloaded/)
+  assert.ok(!JSON.stringify(out).includes('k-secret'))
+})
+
+test('a busy model is passed over for the next newest Flash, and the analysis says so', async () => {
+  const listing = { status: 200, body: { models: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-2.5-flash']
+    .map((n) => ({ name: `models/${n}`, supportedGenerationMethods: gen })) } }
+  const busy = { status: 503, body: { error: { message: 'This model is currently experiencing high demand.' } } }
+  const seen = []
+  const f = fakeFetch([[/\/models\?/, listing], [/gemini-3\.8-flash:/, busy], [/gemini-3\.7-flash:/, answer]], seen)
+  const out = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: f })
+  assert.equal(out.model, 'gemini-3.7-flash')
+  assert.match(out.brief.cautions[0], /^gemini-3\.8-flash was busy \(503\), so gemini-3\.7-flash wrote this analysis$/)
+  assert.ok(!seen.some((s) => /3\.6-flash/.test(s.url)), 'no further model is asked once one answers')
+
+  const allBusy = fakeFetch([[/\/models\?/, listing], [/:streamGenerateContent/, busy]])
+  await assert.rejects(generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: allBusy }),
+    /No Gemini model could write the analysis just now: gemini-3\.8-flash was busy \(503\); gemini-3\.7-flash was busy \(503\); gemini-3\.6-flash was busy \(503\); gemini-2\.5-flash was busy \(503\)\. Ask again/)
+})
+
+test('a model that never starts answering is passed over after the start limit', async () => {
+  const listing = { status: 200, body: { models: ['gemini-3.8-flash', 'gemini-3.7-flash']
+    .map((n) => ({ name: `models/${n}`, supportedGenerationMethods: gen })) } }
+  const routes = fakeFetch([[/\/models\?/, listing], [/gemini-3\.7-flash:/, answer]])
+  const f = (url, init) => /3\.8-flash:/.test(url)
+    ? new Promise((_, reject) => init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e) }))
+    : routes(url, init)
+  const out = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: f, timeoutMs: 30_000, startMs: 20 })
+  assert.equal(out.model, 'gemini-3.7-flash')
+  assert.match(out.brief.cautions[0], /gemini-3\.8-flash did not start answering within 0 seconds, so gemini-3\.7-flash/)
 })
