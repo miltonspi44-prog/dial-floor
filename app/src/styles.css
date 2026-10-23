@@ -494,3 +494,16 @@ table.data tr.thin .minibar i { opacity: 0.45; }
 }
 .pickchip button { border: 0; background: transparent; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; color: var(--muted); }
 .pickchip button:hover { color: var(--bad); }
+
+/* ---------- 0043: the AI floor ---------- */
+.aifloor .aibrief p { line-height: 1.5; }
+.aifloor .aiheadline { font-size: 16px; font-weight: 700; margin: 4px 0 6px; }
+.aifloor .ailist { margin: 4px 0 0; padding-left: 18px; line-height: 1.5; }
+.aifloor .ailist li { margin: 3px 0; }
+.aifloor td.lift { font-variant-numeric: tabular-nums; font-weight: 600; }
+.aifloor td.lift.up { color: var(--ok); }
+.aifloor td.lift.down { color: var(--bad); }
+.aifloor .tag { margin: 0 4px 2px 0; }
+.aichip { margin-top: 6px; font-size: 13px; color: var(--muted); }
+.aichip b { color: var(--ink); }
+.aifloor td.why { min-width: 260px; }

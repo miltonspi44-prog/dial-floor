@@ -82,8 +82,17 @@ function bestHint(b: BestTimes | null, lead: LeadRow): string | null {
   return `Best hours for ${trade}: ${t.cells.slice(0, 2).map((c) => `${hourLabel(c.hour)} (${pct(c.rate)} pick up)`).join(', ')} their time, vs ${pct(t.rate)} all day${now ? `; this hour ${pct(now.rate)}` : ''}`
 }
 
+/** 0043: what the AI floor thinks of this lead, in one line. */
+function aiLine(s: { answer_lift: number; win_lift: number; best_hour: number | null } | null): string | null {
+  if (!s) return null
+  const x = (v: number) => `${v.toFixed(v >= 2 ? 1 : 2)}×`
+  return `AI: ${x(s.answer_lift)} as likely as average to pick up, ${x(s.win_lift)} to convert`
+    + (s.best_hour != null ? ` · best around ${hourLabel(s.best_hour)} their time` : '')
+}
+
 export default function Dial({ profile }: { profile: Profile | null }) {
   const [ws, setWs] = useState<NextLeadResult | null>(null)
+  const [aiScore, setAiScore] = useState<{ answer_lift: number; win_lift: number; best_hour: number | null } | null>(null)
   const [phase, setPhase] = useState<Phase>('loading')
   const [attemptId, setAttemptId] = useState<number | null>(null)
   const [popup, setPopup] = useState(false)
@@ -113,6 +122,15 @@ export default function Dial({ profile }: { profile: Profile | null }) {
   const autoHandled = useRef<number | null>(null)
 
   const lead = ws?.lead
+  // 0043: the lead's AI score, fetched once per lead (lead_scores is readable by active users)
+  const leadId = lead?.id ?? null
+  useEffect(() => {
+    if (leadId == null) return
+    let live = true
+    supabase.from('lead_scores').select('answer_lift, win_lift, best_hour').eq('lead_id', leadId).maybeSingle()
+      .then(({ data }) => { if (live) setAiScore((data ?? null) as typeof aiScore) })
+    return () => { live = false; setAiScore(null) }
+  }, [leadId])
 
   function setToastMsg(m: string, ms = 2500) {
     setToast(m)
@@ -538,6 +556,7 @@ export default function Dial({ profile }: { profile: Profile | null }) {
                   lead.tz && `their time: ${localTime(lead.tz)}`].filter(Boolean).join(' · ')}
               </div>
               {hint && <div className="besthint">{hint}</div>}
+              {aiLine(aiScore) && <div className="aichip">{aiLine(aiScore)}</div>}
               <div style={{ marginTop: 8 }}>
                 {(ws?.intents ?? []).slice(0, 4).map((i) => (
                   <span key={i.key} className={`tag ${i.confidence >= 0.95 ? 'hot' : ''}`}>{i.label}</span>

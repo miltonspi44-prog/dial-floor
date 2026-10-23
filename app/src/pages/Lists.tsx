@@ -90,7 +90,7 @@ export default function Lists() {
   const [itemsErr, setItemsErr] = useState<string | null>(null)
   const [addQ, setAddQ] = useState('')
   const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
-  const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', intent: '', minScore: '', mobileFirst: false, limit: '200' })
+  const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', intent: '', minScore: '', mobileFirst: false, aiOrder: true, limit: '200' })
   // 0041: the trades and sources on offer, counted under the rules picked so far
   // (tier first, then state and area code, then each other), and how many leads
   // the rules match in all. A list takes any of the trades picked, and any of
@@ -199,6 +199,8 @@ export default function Lists() {
     if (form.intent) rules.intent = form.intent
     if (form.minScore) rules.min_score = Number(form.minScore)
     if (form.mobileFirst) rules.phone_type = 'mobile'
+    // 0043: the likeliest wins first, and a list smaller than the match takes the best of it
+    if (form.aiOrder) rules.ai_order = true
     const name = form.name || `List ${new Date().toLocaleDateString()}`
     const { data, error: failed } = await supabase.rpc('build_list', {
       p_name: name,
@@ -368,6 +370,9 @@ export default function Lists() {
           <label>Size<input style={{ width: 80 }} value={form.limit} onChange={(e) => setForm({ ...form, limit: e.target.value })} inputMode="numeric" /></label>
           <label style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <input type="checkbox" checked={form.mobileFirst} onChange={(e) => setForm({ ...form, mobileFirst: e.target.checked })} /> mobile numbers only
+          </label>
+          <label style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }} title="Order the list by the AI's chance of a win, and take the best of the match when the list is smaller">
+            <input type="checkbox" checked={form.aiOrder} onChange={(e) => setForm({ ...form, aiOrder: e.target.checked })} /> best leads first (AI)
           </label>
           <button className="btn primary" disabled={busy}>{busy ? 'Building…' : 'Build list'}</button>
         </div>

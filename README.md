@@ -152,6 +152,21 @@ project's public URL and publishable key.
     under **Removed**, and **restore** brings them back.
   - A manager can't remove, demote or take themselves off the floor, so there's
     always an active manager. Agents can't change their own role.
+- **AI** (managers): every lead still in play is scored hourly on its chance of
+  reaching a conversation and of ending in a chance given or a sale. The model
+  learns from the floor's own last 90 days of calls, by trade, state, area
+  code, phone type, website, source, tier, reviews and scraper score, and pulls
+  thin evidence toward the floor average. Each agent's record per conversation
+  (a win 1, a callback or email 0.3) is learned the same way, overall and by
+  trade and state, and the morning radar proposes each agent the leads they
+  are likeliest to convert (setting `ai.match`). Gemini reads the aggregates,
+  never a lead's name, number or notes, and writes the floor analysis: where
+  and when to call, who should work what, and lists worth building, each with
+  a one-click build. It writes one at 12:35 UTC daily or on demand. It needs
+  `GEMINI_API_KEY` in Supabase → Edge Functions → Secrets; the scores and the
+  matching work without it. The Dial page shows the lead's pickup and win
+  chance against average, and the list builder's "best leads first (AI)" orders a
+  list by chance of a win.
 - **Radar** (managers): the morning run (the scheduler at 13:00 UTC, or the
   first Dial or Radar page of the business day) ranks the pool and *proposes*
   every free agent their best leads as a "Radar" list (`radar_deal_per_agent`,

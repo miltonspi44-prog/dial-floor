@@ -9,6 +9,7 @@ anybody's memory.
 | `zoom-webhook` | **false** | Zoom signs its deliveries with `ZOOM_WEBHOOK_SECRET_TOKEN`; it cannot carry a Supabase JWT. The function checks the signature (constant-time) and a freshness window itself. |
 | `admin-users`  | **true**  | Only a signed-in manager may call it; it re-checks the caller's profile server-side on top. |
 | `sync-console` | **false** | pg_cron calls it (migration 0034) with the `x-cron-secret` header; cron carries no JWT. The secret is the whole gate. |
+| `floor-ai`     | **false** | `ai_brief_request()` (migration 0043) calls it through pg_net with the same `x-cron-secret` header, for the 12:35 UTC job and for a manager's "Ask Gemini" button alike. |
 
 Deploying with the wrong flag is the failure mode item 51 was about: a default
 `verify_jwt = true` redeploy of `zoom-webhook` makes Zoom's deliveries bounce
@@ -22,6 +23,10 @@ with 401 and every call outcome silently stops arriving.
   `sync_cron_secret`, which is where 0034's cron jobs read it), and
   `CONSOLE_URL` only if the console ever moves.
 - `admin-users`: none beyond the built-ins.
+- `floor-ai`: `GEMINI_API_KEY` (from Google AI Studio). `CRON_SECRET` is the one
+  sync-console already uses; secrets are shared by every function in the project.
+  Without the key the function records a failed run saying so, and the lead
+  scores and the matched radar keep working: they never needed it.
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` arrive built in on every function.
 

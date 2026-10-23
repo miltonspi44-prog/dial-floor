@@ -192,7 +192,7 @@ export default function Radar() {
 
       <div className="sectionhead">
         <h3>Radar lists</h3>
-        <span className="muted small">the radar proposes each free agent their best leads; a manager approves the list, and nothing more is proposed for that agent until it is dialed through</span>
+        <span className="muted small">the radar proposes each free agent the leads they are likeliest to convert (see the AI tab); a manager approves the list, and nothing more is proposed for that agent until it is dialed through</span>
       </div>
       <div className="card">
         {data.lists.length ? (

@@ -544,3 +544,41 @@ const OUTCOME_LABELS: Record<string, string> = {
 export function dispositionLabel(code: string | null): string {
   return code ? (OUTCOME_LABELS[code] ?? code) : 'not logged'
 }
+
+/** 0043: the AI floor. A lift is a smoothed rate against the floor's (1 = average). */
+export interface AiReason { kind: string; value: string; dials: number; answer: number; win: number }
+export interface AiSegment { value: string; dials: number; convos: number; wins: number; answer_lift: number; win_lift: number }
+export interface AiFit { kind: string; value: string; convos: number; lift: number }
+export interface AiAgent {
+  agent: string; dials_90d: number; conversations: number; wins: number; kept_alive: number; fit: number
+  strong: AiFit[]; weak: AiFit[]
+}
+export interface AiTopLead {
+  lead_id: number; name: string; phone: string | null; city: string | null; state: string | null; trade: string; tz: string | null
+  p_answer: number; p_win: number; answer_lift: number; win_lift: number; best_hour: number | null
+  reasons: AiReason[]; callable_now: boolean
+}
+export interface AiListIdea { name: string; rules: Record<string, string | number>; why: string }
+export interface AiBriefDoc {
+  headline: string; summary: string
+  findings: { title: string; detail: string; evidence: string }[]
+  where_to_call: { segment: string; when: string; why: string }[]
+  agent_matching: { agent: string; focus: string; why: string }[]
+  lists: AiListIdea[]
+  cautions: string[]
+}
+export interface AiFloorData {
+  model: { at?: string; days?: number; dials?: number; convos?: number; wins?: number; answer_rate?: number; win_rate?: number; scored?: number }
+  segments: Record<string, AiSegment[]>
+  floor_hours: { hour: number; dials: number; pickup: number; lift: number }[]
+  trade_hours: { trade: string; dials: number; best_hours: { hour: number; lift: number }[] | null }[]
+  agents: AiAgent[]
+  pool: { dialable: number; bands: Record<string, number>; best_cells: { trade: string; state: string; leads: number; answer: number; win: number }[] }
+  radar: { matched: boolean; per_agent: number; waiting_approval: number; being_dialed: number }
+  outside_calls_7d: number
+  settings: { model?: string; match?: boolean }
+  top_leads: AiTopLead[]
+  brief: { id: number; created_at: string; source: string; model: string | null; brief: AiBriefDoc } | null
+  last_attempt: { id: number; created_at: string; source: string; ok: boolean; model: string | null; error: string | null } | null
+  requested: { at: string; by: string | null } | null
+}

@@ -15,6 +15,7 @@ const ReportsHub = lazy(() => import('./pages/ReportsHub'))
 const Playbook = lazy(() => import('./pages/Playbook'))
 const Users = lazy(() => import('./pages/Users'))
 const Settings = lazy(() => import('./pages/Settings'))
+const AiFloor = lazy(() => import('./pages/AiFloor'))
 
 const lazyFallback = <div className="page"><div className="emptystate">Loading…</div></div>
 
@@ -94,6 +95,7 @@ export default function App() {
           {!isManager && <NavLink to="/coaching" className={({ isActive }) => (isActive ? 'active' : '')}>Coaching</NavLink>}
           {isManager && <NavLink to="/leads" className={({ isActive }) => (isActive ? 'active' : '')}>Leads</NavLink>}
           {isManager && <NavLink to="/reports" className={({ isActive }) => (isActive ? 'active' : '')}>Reports</NavLink>}
+          {isManager && <NavLink to="/ai" className={({ isActive }) => (isActive ? 'active' : '')}>AI</NavLink>}
           {isManager && <NavLink to="/playbook" className={({ isActive }) => (isActive ? 'active' : '')}>Playbook</NavLink>}
           {isManager && <NavLink to="/team" className={({ isActive }) => (isActive ? 'active' : '')}>Team</NavLink>}
           {isManager && <NavLink to="/settings" className={({ isActive }) => (isActive ? 'active' : '')}>Settings</NavLink>}
@@ -119,6 +121,7 @@ export default function App() {
           <Route path="/coaching" element={<Coaching profile={profile} />} />
           {isManager && <Route path="/leads" element={<LeadsHub myName={profile?.name ?? ''} />} />}
           {isManager && <Route path="/reports" element={<ReportsHub profile={profile} />} />}
+          {isManager && <Route path="/ai" element={<AiFloor />} />}
           {isManager && <Route path="/playbook" element={<Playbook />} />}
           {isManager && <Route path="/team" element={<Users me={session.user.id} />} />}
           {isManager && <Route path="/settings" element={<Settings />} />}
