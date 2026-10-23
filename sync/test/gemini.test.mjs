@@ -1,7 +1,7 @@
 // floor-ai's Gemini client, without a key: a fake fetch stands in for Google.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pickModel, parseBrief, cleanRules, buildPrompt, generateBrief, probe, GeminiError } from '../../supabase/functions/floor-ai/gemini.mjs'
+import { pickModel, parseBrief, firstObject, cleanRules, buildPrompt, generateBrief, probe, GeminiError } from '../../supabase/functions/floor-ai/gemini.mjs'
 
 const gen = ['generateContent']
 
@@ -231,4 +231,25 @@ test('a busy model is asked again after a pause, and Flash-Lite is the last reso
   assert.equal(lite.model, 'gemini-3.5-flash-lite')
   assert.match(lite.brief.cautions[0], /^gemini-3\.8-flash was busy \(503\), so gemini-3\.5-flash-lite wrote this analysis$/)
   assert.ok(!seen.some((s) => /3\.1-flash-lite|preview/.test(s.url)), 'the newest lite model first, previews never')
+})
+
+test('JSON wrapped in a sentence, or written twice, is still read; braces inside strings do not fool it', () => {
+  assert.equal(parseBrief('Here is the analysis: {"headline":"a {b} c","summary":"s"} Hope it helps.').headline, 'a {b} c')
+  assert.equal(parseBrief('{"headline":"one","summary":"s"}\n{"headline":"two","summary":"s"}').headline, 'one')
+  assert.equal(firstObject('x {"a":"\\"}"} y'), '{"a":"\\"}"}')
+  assert.equal(firstObject('{"a":1'), null)
+})
+
+test('an unreadable answer passes to the next model, and the error shows what came back', async () => {
+  const listing = { status: 200, body: { models: ['gemini-3.8-flash', 'gemini-3.7-flash']
+    .map((m) => ({ name: `models/${m}`, supportedGenerationMethods: gen })) } }
+  const junk = { status: 200, sse: [piece('Sure! Analysis follows: headline = calls are up', 'STOP')] }
+  const f = fakeFetch([[/\/models\?/, listing], [/3\.8-flash:/, junk], [/3\.7-flash:/, answer]])
+  const out = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: f, retryMs: 1 })
+  assert.equal(out.model, 'gemini-3.7-flash')
+  assert.match(out.brief.cautions[0], /gemini-3\.8-flash answered with unreadable JSON, so gemini-3\.7-flash/)
+
+  const g = fakeFetch([[/\/models\?/, listing], [/:streamGenerateContent/, junk]])
+  await assert.rejects(generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: g, retryMs: 1, maxTries: 2 }),
+    /The last unreadable answer: gemini-3\.7-flash wrote 47 characters \(STOP\) beginning "Sure! Analysis/)
 })

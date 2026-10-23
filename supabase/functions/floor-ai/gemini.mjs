@@ -104,14 +104,31 @@ export function cleanRules(rules) {
   return out
 }
 
+/** The first whole {...} in the text, strings and escapes respected: a model
+ *  may wrap its JSON in a sentence or a code fence, or write it twice. */
+export function firstObject(text) {
+  const s = String(text ?? '')
+  const a = s.indexOf('{')
+  if (a < 0) return null
+  let depth = 0, inStr = false, esc = false
+  for (let i = a; i < s.length; i++) {
+    const c = s[i]
+    if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue }
+    if (c === '"') inStr = true
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) return s.slice(a, i + 1)
+  }
+  return null
+}
+
 /** Gemini's answer, read defensively: the page renders whatever comes out of
  *  here, so everything is a string of bounded length or a list of such objects. */
 export function parseBrief(text) {
-  let raw = String(text ?? '').trim()
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(raw)
-  if (fence) raw = fence[1]
+  const raw = String(text ?? '').trim()
   let j
-  try { j = JSON.parse(raw) } catch { throw new GeminiError('Gemini answered, but not with readable JSON.') }
+  try { j = JSON.parse(raw) } catch {
+    try { j = JSON.parse(firstObject(raw) ?? '') } catch { throw new GeminiError('Gemini answered, but not with readable JSON.') }
+  }
   if (!j || typeof j !== 'object' || Array.isArray(j)) throw new GeminiError('Gemini answered with something other than an analysis.')
   const list = (v, n) => (Array.isArray(v) ? v.slice(0, n) : [])
   const brief = {
@@ -155,9 +172,8 @@ async function call(fetchFn, url, apiKey, init, timeoutMs, signal) {
 /** True once the text so far is a whole analysis: the outer object only closes
  *  at the very end, so no shorter prefix of the answer parses. */
 function answered(text) {
-  const t = text.trim()
-  if (!/[}`]$/.test(t)) return false
-  try { parseBrief(t); return true } catch { return false }
+  if (!/[}`]\s*$/.test(text)) return false
+  try { parseBrief(text); return true } catch { return false }
 }
 
 /** Reads the streamed answer (server-sent events), and stops as soon as it is
@@ -346,6 +362,7 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
     } finally { clearTimeout(timer) }
   }
 
+  let bad = null   // the last answer that could not be read, described for the error
   const attempt = async (n) => {
     const who = n.replace('models/', '')
     const ctl = new AbortController()
@@ -364,7 +381,12 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
       const { text, finish, blocked } = await readAnswer(res, who, timeoutMs)
       if (!text.trim()) throw new GeminiError(`${who} returned no analysis (${finish ?? blocked ?? 'no text'}).`)
       if (finish === 'MAX_TOKENS' && !answered(text)) throw new GeminiError('Gemini ran out of room before finishing the analysis. Ask again.')
-      return { model: who, brief: parseBrief(text) }
+      try { return { model: who, brief: parseBrief(text) } } catch (e) {
+        // an unreadable answer is one model's bad draw: the next may do better
+        const t = text.trim()
+        bad = `${who} wrote ${t.length} characters (${finish ?? 'no finish reason'}) beginning ${JSON.stringify(t.slice(0, 80))} and ending ${JSON.stringify(t.slice(-80))}`
+        return { passed: `answered with ${e instanceof GeminiError ? 'unreadable JSON' : 'an error'}` }
+      }
     } finally { clearTimeout(stop) }
   }
 
@@ -395,5 +417,5 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
     wait = Math.min(wait * 2, 15_000)
   }
   const tally = [...why].map(([m, [reason, n]]) => `${m} ${reason}${n > 1 ? ` (${n} tries)` : ''}`).join('; ')
-  throw new GeminiError(`No Gemini model could write the analysis just now: ${tally}. Ask again in a few minutes.`)
+  throw new GeminiError(`No Gemini model could write the analysis just now: ${tally}. Ask again in a few minutes.${bad ? ` The last unreadable answer: ${bad}.` : ''}`)
 }

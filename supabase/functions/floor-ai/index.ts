@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
     await record({ ok: true, model: out.model, brief: out.brief });
     return json({ ok: true, model: out.model });
   } catch (e) {
-    const msg = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    const msg = (e instanceof Error ? e.message : String(e)).slice(0, 1500);
     console.error(`floor-ai: ${msg}`);
     await record({ ok: false, error: msg });
     return json({ ok: false, why: msg });
