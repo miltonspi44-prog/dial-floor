@@ -5,10 +5,11 @@
 // x-cron-secret header, the same gate sync-console uses; verify_jwt is off
 // because the call comes from the database, not a browser.
 //
-// Each run: fresh lead scores (ai_score_refresh), the aggregated snapshot
-// (ai_floor_snapshot — rates, counts and lifts only, no lead names, numbers or
-// notes), Gemini's analysis of it, and one row in ai_briefs either way, so the
-// AI page can say what happened.
+// Each run: the aggregated snapshot (ai_floor_snapshot — rates, counts and
+// lifts only, no lead names, numbers or notes), Gemini's analysis of it, and one
+// row in ai_briefs either way, so the AI page can say what happened. The lead
+// scores it reads are the hourly job's: rescoring every lead takes longer than
+// the API's statement timeout allows, so it is not done from here.
 //
 // Secrets (Supabase → Edge Functions → Secrets; shared by every function):
 //   GEMINI_API_KEY  from Google AI Studio (never in the repo)
@@ -61,8 +62,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { error: scoreErr } = await supa.rpc("ai_score_refresh");
-    if (scoreErr) throw new Error(`scoring the leads failed: ${scoreErr.message}`);
     const { data: snapshot, error: snapErr } = await supa.rpc("ai_floor_snapshot");
     if (snapErr) throw new Error(`reading the floor failed: ${snapErr.message}`);
     const { data: setting } = await supa.from("app_settings").select("value").eq("key", "ai").maybeSingle();
