@@ -53,15 +53,19 @@ export function buildPrompt(snapshot) {
   ].join('\n')
 }
 
+const ranked = (models, re) => (models ?? [])
+  .filter((m) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
+  .map((m) => ({ name: String(m.name), v: re.exec(String(m.name)) }))
+  .filter((x) => x.v)
+  .sort((a, b) => Number(b.v[1]) - Number(a.v[1]))
+  .map((x) => x.name)
+
 /** Every stable "gemini-N-flash" model in a models listing, newest first. */
-export function flashModels(models) {
-  return (models ?? [])
-    .filter((m) => (m?.supportedGenerationMethods ?? []).includes('generateContent'))
-    .map((m) => ({ name: String(m.name), v: /^models\/gemini-(\d+(?:\.\d+)?)-flash$/.exec(String(m.name)) }))
-    .filter((x) => x.v)
-    .sort((a, b) => Number(b.v[1]) - Number(a.v[1]))
-    .map((x) => x.name)
-}
+export const flashModels = (models) => ranked(models, /^models\/gemini-(\d+(?:\.\d+)?)-flash$/)
+
+/** The lighter "gemini-N-flash-lite" models, newest first: the last resort when
+ *  every Flash model is too busy, and plenty for reading a table of rates. */
+export const liteModels = (models) => ranked(models, /^models\/gemini-(\d+(?:\.\d+)?)-flash-lite$/)
 
 /** The newest stable "gemini-N-flash" model this key can call, else any Flash
  *  model that is not a preview, else null. Names change every few months, so the
@@ -223,7 +227,7 @@ async function listModels(apiKey, fetchFn, timeoutMs = 20_000) {
 /** For a model that will not answer: which Flash models this key can see, and
  *  how long a few of them take to say one word, with and without the thinking
  *  setting. Names, statuses and timings only. */
-export async function probe({ apiKey, fetchFn = fetch, timeoutMs = 25_000 }) {
+export async function probe({ apiKey, snapshot = null, fetchFn = fetch, timeoutMs = 25_000 }) {
   const out = { tries: [] }
   let t = Date.now()
   const res = await call(fetchFn, `${API}/models?pageSize=200`, apiKey, { method: 'GET' }, timeoutMs)
@@ -253,17 +257,59 @@ export async function probe({ apiKey, fetchFn = fetch, timeoutMs = 25_000 }) {
     row.ms = Date.now() - t0
     return row
   }))
+  // with the floor's snapshot: the real prompt to the first model that answered,
+  // whole and streamed, beside a streamed one-word prompt, to tell a refusal of
+  // the request's size from a refusal of streaming
+  const target = out.tries.find((r) => r.status === 200)?.model
+  if (snapshot && target) {
+    const n = `models/${target}`
+    const real = { systemInstruction: { parts: [{ text: SYSTEM }] }, contents: [{ role: 'user', parts: [{ text: buildPrompt(snapshot) }] }],
+                   generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 32768, ...(thinkingFor(n) ? { thinkingConfig: thinkingFor(n) } : {}) } }
+    const tiny = { contents: [{ role: 'user', parts: [{ text: 'Reply with the single word ok.' }] }],
+                   generationConfig: { maxOutputTokens: 1024, ...(thinkingFor(n) ? { thinkingConfig: thinkingFor(n) } : {}) } }
+    const variant = async (label, stream, req) => {
+      const t0 = Date.now()
+      const row = { model: target, label, prompt_chars: JSON.stringify(req).length }
+      const ctl = new AbortController()
+      const timer = setTimeout(() => ctl.abort(), 60_000)
+      try {
+        const r = await fetchFn(`${API}/${n}:${stream ? 'streamGenerateContent?alt=sse' : 'generateContent'}`, { method: 'POST', signal: ctl.signal,
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(req) })
+        row.status = r.status
+        row.headers_ms = Date.now() - t0
+        if (!r.ok) row.error = (await errorMessage(r)).slice(0, 200)
+        else if (stream) r.body?.cancel().catch(() => {})
+        else {
+          const j = await r.json()
+          row.finish = j?.candidates?.[0]?.finishReason ?? null
+          row.chars = (j?.candidates?.[0]?.content?.parts ?? []).map((p) => p?.text ?? '').join('').length
+          row.usage = j?.usageMetadata ?? null
+        }
+      } catch (e) { row.error = e?.name === 'AbortError' ? 'no answer in 60 seconds' : (e?.message ?? String(e)) }
+      finally { clearTimeout(timer) }
+      row.ms = Date.now() - t0
+      return row
+    }
+    out.real = await Promise.all([variant('real, whole', false, real), variant('real, streamed', true, real), variant('one word, streamed', true, tiny)])
+  }
   return out
 }
 
-// "this model, not now" rather than "this request is wrong": try the next one
+// "this model, not now" rather than "this request is wrong": try another, or
+// the same one again later; a model that is gone or out of quota is not retried
 const BUSY = { 404: 'was not available (404)', 429: 'had no quota left (429)', 500: 'failed (500)', 503: 'was busy (503)', 504: 'timed out (504)' }
+const SPENT = new Set([404, 429])
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** Ask Gemini for the floor analysis. Returns { model, brief }. The newest
- *  Flash model is asked first (or the one set in Settings); one that is busy,
- *  gone, out of quota or slow to start is passed over for the next newest, up
- *  to four, all inside one time limit. The analysis says when that happened. */
-export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, timeoutMs = 110_000, startMs = 30_000 }) {
+ *  Flash model is asked first (or the one set in Settings), then the next
+ *  newest, then the Flash-Lite models; a model that is busy is asked again
+ *  after a pause (2, 4, 8, then 15 s), up to 16 tries inside one time limit.
+ *  One that is gone, out of quota or slow to start (startMs) is not asked again.
+ *  The analysis says which model wrote it when the first choice could not. */
+export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, timeoutMs = 110_000, startMs = 20_000,
+                                      retryMs = 2_000, maxTries = 16 }) {
   if (!apiKey) throw new GeminiError('GEMINI_API_KEY is not set.')
   const deadline = Date.now() + timeoutMs
   const configured = model ? (String(model).startsWith('models/') ? String(model) : `models/${model}`) : null
@@ -281,7 +327,7 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
   const more = async () => {
     if (!listed) {
       const all = await listModels(apiKey, fetchFn)
-      listed = flashModels(all)
+      listed = [...flashModels(all), ...liteModels(all)]
       if (!listed.length && pickModel(all)) listed = [pickModel(all)]
     }
     return listed
@@ -295,7 +341,7 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
       return await fetchFn(`${API}/${n}:streamGenerateContent?alt=sse`, { method: 'POST', signal: ctl.signal,
         headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: body(n, think) })
     } catch (e) {
-      if (e?.name === 'AbortError') return { passed: `did not start answering within ${Math.round(ms / 1000)} seconds` }
+      if (e?.name === 'AbortError') return { passed: `did not start answering within ${Math.round(ms / 1000)} seconds`, spent: true }
       throw new GeminiError(`Could not reach Gemini: ${e?.message ?? e}`)
     } finally { clearTimeout(timer) }
   }
@@ -313,7 +359,7 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
         res = await start(n, false, ctl)
       }
       if (res.passed) return res
-      if (BUSY[res.status]) { res.body?.cancel().catch(() => {}); return { passed: BUSY[res.status] } }
+      if (BUSY[res.status]) { res.body?.cancel().catch(() => {}); return { passed: BUSY[res.status], spent: SPENT.has(res.status) } }
       if (!res.ok) throw await explain(res)
       const { text, finish, blocked } = await readAnswer(res, who, timeoutMs)
       if (!text.trim()) throw new GeminiError(`${who} returned no analysis (${finish ?? blocked ?? 'no text'}).`)
@@ -324,16 +370,30 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
 
   const queue = configured ? [configured] : [...await more()]
   if (!queue.length) throw new GeminiError('This key can reach no Gemini Flash model. Set one in Settings → AI → model.')
-  const passed = []
-  for (let i = 0; i < queue.length && passed.length < 4; i++) {
-    const out = await attempt(queue[i])
-    if (out.brief) {
-      if (passed.length) out.brief.cautions = [`${passed[0]}, so ${out.model} wrote this analysis`, ...out.brief.cautions].slice(0, 6)
-      return { model: out.model, brief: out.brief }
+  const spent = new Set()
+  const why = new Map()   // model → [its latest reason, how many times]
+  let first = null, tries = 0, wait = retryMs
+  for (let round = 0; tries < maxTries; round++) {
+    for (const n of queue) {
+      if (spent.has(n) || tries >= maxTries || (tries && deadline - Date.now() < 5_000)) continue
+      tries++
+      const out = await attempt(n)
+      const who = n.replace('models/', '')
+      if (out.brief) {
+        if (first && !first.startsWith(`${out.model} `)) out.brief.cautions = [`${first}, so ${out.model} wrote this analysis`, ...out.brief.cautions].slice(0, 6)
+        return { model: out.model, brief: out.brief }
+      }
+      first ??= `${who} ${out.passed}`
+      why.set(who, [out.passed, (why.get(who)?.[1] ?? 0) + 1])
+      if (out.spent) spent.add(n)
     }
-    passed.push(`${queue[i].replace('models/', '')} ${out.passed}`)
-    if (deadline - Date.now() < 5_000) break
-    if (i === queue.length - 1 && configured && queue.length === 1) queue.push(...(await more()).filter((n) => n !== configured))
+    if (deadline - Date.now() < wait + 5_000) break
+    // the model set in Settings could not answer: the rest may
+    if (round === 0 && configured) for (const n of await more()) if (!queue.includes(n)) queue.push(n)
+    if (queue.every((n) => spent.has(n))) break
+    await sleep(wait)
+    wait = Math.min(wait * 2, 15_000)
   }
-  throw new GeminiError(`No Gemini model could write the analysis just now: ${passed.join('; ')}. Ask again in a few minutes.`)
+  const tally = [...why].map(([m, [reason, n]]) => `${m} ${reason}${n > 1 ? ` (${n} tries)` : ''}`).join('; ')
+  throw new GeminiError(`No Gemini model could write the analysis just now: ${tally}. Ask again in a few minutes.`)
 }

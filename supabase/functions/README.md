@@ -28,10 +28,11 @@ with 401 and every call outcome silently stops arriving.
   Without the key the function records a failed run saying so, and the lead
   scores and the matched radar keep working: they never needed it.
   When the newest Flash model is busy, gone or out of quota it moves on to the
-  next newest (up to four). If none answer, POST `{"probe": true}` with the
+  next newest, then to the Flash-Lite models, asking busy ones again after a
+  pause (up to 16 tries in 110 s). If none answer, POST `{"probe": true}` with the
   cron secret, e.g. via `net.http_post` reading it from Vault: the reply (in
-  `net._http_response`) lists the key's Flash models and how each one answered
-  a one-word prompt.
+  `net._http_response`) lists the key's Flash models, how each one answered a
+  one-word prompt, and how the first that answered takes the real prompt.
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` arrive built in on every function.
 

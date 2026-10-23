@@ -81,7 +81,7 @@ test('a configured model that is gone falls back to the newest Flash and says so
     [/\/models\?/, { status: 200, body: { models: [{ name: 'models/gemini-3-flash', supportedGenerationMethods: gen }] } }],
     [/gemini-3-flash:streamGenerateContent/, answer],
   ])
-  const out = await generateBrief({ apiKey: 'k', model: 'gemini-1.0-flash', snapshot: {}, fetchFn: f })
+  const out = await generateBrief({ apiKey: 'k', model: 'gemini-1.0-flash', snapshot: {}, fetchFn: f, retryMs: 1 })
   assert.equal(out.model, 'gemini-3-flash')
   assert.match(out.brief.cautions[0], /gemini-1\.0-flash was not available \(404\), so gemini-3-flash wrote this analysis/)
 })
@@ -198,8 +198,8 @@ test('a busy model is passed over for the next newest Flash, and the analysis sa
   assert.ok(!seen.some((s) => /3\.6-flash/.test(s.url)), 'no further model is asked once one answers')
 
   const allBusy = fakeFetch([[/\/models\?/, listing], [/:streamGenerateContent/, busy]])
-  await assert.rejects(generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: allBusy }),
-    /No Gemini model could write the analysis just now: gemini-3\.8-flash was busy \(503\); gemini-3\.7-flash was busy \(503\); gemini-3\.6-flash was busy \(503\); gemini-2\.5-flash was busy \(503\)\. Ask again/)
+  await assert.rejects(generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: allBusy, retryMs: 1, maxTries: 8 }),
+    /No Gemini model could write the analysis just now: gemini-3\.8-flash was busy \(503\) \(2 tries\); gemini-3\.7-flash was busy \(503\) \(2 tries\); gemini-3\.6-flash was busy \(503\) \(2 tries\); gemini-2\.5-flash was busy \(503\) \(2 tries\)\. Ask again/)
 })
 
 test('a model that never starts answering is passed over after the start limit', async () => {
@@ -212,4 +212,23 @@ test('a model that never starts answering is passed over after the start limit',
   const out = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: f, timeoutMs: 30_000, startMs: 20 })
   assert.equal(out.model, 'gemini-3.7-flash')
   assert.match(out.brief.cautions[0], /gemini-3\.8-flash did not start answering within 0 seconds, so gemini-3\.7-flash/)
+})
+
+test('a busy model is asked again after a pause, and Flash-Lite is the last resort', async () => {
+  const one = { status: 200, body: { models: [{ name: 'models/gemini-3.8-flash', supportedGenerationMethods: gen }] } }
+  let n = 0
+  const f = fakeFetch([[/\/models\?/, one], [/:streamGenerateContent/, () => (++n === 1 ? { status: 503, body: {} } : answer)]])
+  const out = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: f, retryMs: 1 })
+  assert.equal(out.model, 'gemini-3.8-flash')
+  assert.equal(n, 2)
+  assert.ok(!out.brief.cautions.length, 'the first choice wrote it after all, so nothing to note')
+
+  const withLite = { status: 200, body: { models: ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.5-flash-lite-preview']
+    .map((m) => ({ name: `models/${m}`, supportedGenerationMethods: gen })) } }
+  const seen = []
+  const g = fakeFetch([[/\/models\?/, withLite], [/3\.8-flash:/, { status: 503, body: {} }], [/3\.5-flash-lite:/, answer]], seen)
+  const lite = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: g, retryMs: 1 })
+  assert.equal(lite.model, 'gemini-3.5-flash-lite')
+  assert.match(lite.brief.cautions[0], /^gemini-3\.8-flash was busy \(503\), so gemini-3\.5-flash-lite wrote this analysis$/)
+  assert.ok(!seen.some((s) => /3\.1-flash-lite|preview/.test(s.url)), 'the newest lite model first, previews never')
 })

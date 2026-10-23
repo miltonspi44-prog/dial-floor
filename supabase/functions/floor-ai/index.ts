@@ -61,7 +61,10 @@ Deno.serve(async (req) => {
     return json({ ok: false, why: "no GEMINI_API_KEY" });
   }
   // {"probe": true}: how the key's Flash models respond, for when one will not
-  if (body.probe === true) return json(await probe({ apiKey }));
+  if (body.probe === true) {
+    const { data: snapshot } = await supa.rpc("ai_floor_snapshot");
+    return json(await probe({ apiKey, snapshot }));
+  }
 
   try {
     const { data: snapshot, error: snapErr } = await supa.rpc("ai_floor_snapshot");
