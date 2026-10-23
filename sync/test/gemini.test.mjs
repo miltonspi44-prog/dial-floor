@@ -42,26 +42,30 @@ test('the prompt carries the data and the shape, and nothing it was not given', 
   assert.match(p, /"where_to_call"/)
 })
 
+// a streamed reply is server-sent events, one GenerateContentResponse per event
+const sse = (chunks) => chunks.map((c) => `data: ${JSON.stringify(c)}\r\n\r\n`).join('')
+const piece = (text, finishReason) => ({ candidates: [{ content: { parts: [{ text }] }, ...(finishReason ? { finishReason } : {}) }] })
+
 function fakeFetch(routes, seen = []) {
   return async (url, init) => {
     seen.push({ url, init })
     for (const [pattern, reply] of routes) {
       if (pattern.test(url)) {
         const r = typeof reply === 'function' ? reply(url, init) : reply
-        return { ok: r.status < 400, status: r.status, json: async () => r.body }
+        return new Response(r.sse ? sse(r.sse) : JSON.stringify(r.body), { status: r.status })
       }
     }
-    return { ok: false, status: 500, json: async () => ({}) }
+    return new Response('{}', { status: 500 })
   }
 }
 
-const answer = { candidates: [{ content: { parts: [{ text: '{"headline":"h","summary":"s","findings":[]}' }] } }] }
+const answer = { status: 200, sse: [piece('{"headline":"h",'), piece('"summary":"s","findings":[]}', 'STOP')] }
 
 test('with no model set, the newest Flash is found and asked; the key travels in a header, never the URL', async () => {
   const seen = []
   const f = fakeFetch([
     [/\/models\?/, { status: 200, body: { models: [{ name: 'models/gemini-3.5-flash', supportedGenerationMethods: gen }] } }],
-    [/gemini-3\.5-flash:generateContent$/, { status: 200, body: answer }],
+    [/gemini-3\.5-flash:streamGenerateContent\?alt=sse$/, answer],
   ], seen)
   const out = await generateBrief({ apiKey: 'k-123', model: '', snapshot: {}, fetchFn: f })
   assert.equal(out.model, 'gemini-3.5-flash')
@@ -73,9 +77,9 @@ test('with no model set, the newest Flash is found and asked; the key travels in
 
 test('a configured model that is gone falls back to the newest Flash and says so', async () => {
   const f = fakeFetch([
-    [/gemini-1\.0-flash:generateContent$/, { status: 404, body: { error: { message: 'not found' } } }],
+    [/gemini-1\.0-flash:streamGenerateContent/, { status: 404, body: { error: { message: 'not found' } } }],
     [/\/models\?/, { status: 200, body: { models: [{ name: 'models/gemini-3-flash', supportedGenerationMethods: gen }] } }],
-    [/gemini-3-flash:generateContent$/, { status: 200, body: answer }],
+    [/gemini-3-flash:streamGenerateContent/, answer],
   ])
   const out = await generateBrief({ apiKey: 'k', model: 'gemini-1.0-flash', snapshot: {}, fetchFn: f })
   assert.equal(out.model, 'gemini-3-flash')
@@ -83,22 +87,21 @@ test('a configured model that is gone falls back to the newest Flash and says so
 })
 
 test('a refused key, a spent quota and a missing key each say what to do', async () => {
-  const bad = fakeFetch([[/generateContent$/, { status: 400, body: { error: { message: 'API key not valid. Please pass a valid API key.' } } }]])
+  const bad = fakeFetch([[/GenerateContent/, { status: 400, body: { error: { message: 'API key not valid. Please pass a valid API key.' } } }]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: bad }), /refused the API key.*Secrets/)
-  const quota = fakeFetch([[/generateContent$/, { status: 429, body: { error: { message: 'Resource exhausted' } } }]])
+  const quota = fakeFetch([[/GenerateContent/, { status: 429, body: { error: { message: 'Resource exhausted' } } }]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: quota }), /quota/)
   await assert.rejects(generateBrief({ apiKey: '', model: '', snapshot: {} }), /GEMINI_API_KEY is not set/)
 })
 
 test('an answer cut off by the output cap is reported as such, not as broken JSON', async () => {
-  const cut = { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"headline":"h","summ' }] } }] }
-  const f = fakeFetch([[/generateContent$/, { status: 200, body: cut }]])
+  const f = fakeFetch([[/GenerateContent/, { status: 200, sse: [piece('{"headline":"h","summ', 'MAX_TOKENS')] }]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: f }), /ran out of room/)
 })
 
 test('Gemini 3 and later are asked to think lightly, 2.5 gets a budget, and temperature is left alone', async () => {
   const seen = []
-  const f = fakeFetch([[/generateContent$/, { status: 200, body: answer }]], seen)
+  const f = fakeFetch([[/GenerateContent/, answer]], seen)
   await generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, fetchFn: f })
   await generateBrief({ apiKey: 'k', model: 'gemini-2.5-flash', snapshot: {}, fetchFn: f })
   const [g3, g25] = seen.map((s) => JSON.parse(s.init.body).generationConfig)
@@ -109,13 +112,13 @@ test('Gemini 3 and later are asked to think lightly, 2.5 gets a budget, and temp
 
 test('a model that refuses the thinking setting is asked again without it', async () => {
   const seen = []
-  const f = fakeFetch([[/generateContent$/, (url, init) => JSON.parse(init.body).generationConfig.thinkingConfig
+  const f = fakeFetch([[/GenerateContent/, (url, init) => JSON.parse(init.body).generationConfig.thinkingConfig
     ? { status: 400, body: { error: { message: 'Thinking level is not supported for this model.' } } }
-    : { status: 200, body: answer }]], seen)
+    : answer]], seen)
   const out = await generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: f })
   assert.equal(out.brief.headline, 'h')
   assert.equal(seen.length, 2)
-  const other = fakeFetch([[/generateContent$/, { status: 400, body: { error: { message: 'Request contains an invalid argument.' } } }]])
+  const other = fakeFetch([[/GenerateContent/, { status: 400, body: { error: { message: 'Request contains an invalid argument.' } } }]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: other }), /invalid argument/)
 })
 
@@ -125,4 +128,41 @@ test('a model too slow to answer is named in the message', async () => {
   }))
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, fetchFn: slow, timeoutMs: 20 }),
     /gemini-3\.8-flash did not answer within 0 seconds/)
+})
+
+// a stream that sends these events and then stays open until the request is aborted
+function hanging(chunks, every = 0) {
+  return async (url, init) => {
+    const enc = new TextEncoder()
+    let timer = null
+    const body = new ReadableStream({
+      start(c) {
+        for (const ch of chunks) c.enqueue(enc.encode(sse([ch])))
+        if (every) timer = setInterval(() => c.enqueue(enc.encode(sse([piece(' '.repeat(500))]))), every)
+        init.signal.addEventListener('abort', () => {
+          clearInterval(timer)
+          const e = new Error('aborted'); e.name = 'AbortError'; c.error(e)
+        })
+      },
+      cancel() { clearInterval(timer) },
+    })
+    return new Response(body, { status: 200 })
+  }
+}
+
+test('the answer is taken the moment it is whole, without waiting for the stream to close', async () => {
+  const f = hanging([piece('{"headline":"h","summary":"s",'), piece('"findings":[]}')])
+  const t0 = Date.now()
+  const out = await generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, fetchFn: f, timeoutMs: 5000 })
+  assert.equal(out.brief.headline, 'h')
+  assert.ok(Date.now() - t0 < 1000)
+})
+
+test('a model trailing off into blank space mid-answer is stopped, and one too slow says how far it got', async () => {
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, timeoutMs: 5000,
+    fetchFn: hanging([piece('{"headline":"h", ')], 5) }), /trailed off into blank space/)
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, timeoutMs: 30,
+    fetchFn: hanging([piece('{"headline":"h"')]) }), /gemini-3\.8-flash was still writing after 0 seconds \(15 characters so far\)/)
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3.8-flash', snapshot: {}, timeoutMs: 30,
+    fetchFn: hanging([]) }), /gemini-3\.8-flash sent nothing in 0 seconds/)
 })

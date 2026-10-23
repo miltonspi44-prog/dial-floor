@@ -129,16 +129,67 @@ export function thinkingFor(name) {
   return null
 }
 
-async function call(fetchFn, url, apiKey, init, timeoutMs) {
-  const ctl = new AbortController()
-  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+async function call(fetchFn, url, apiKey, init, timeoutMs, signal) {
+  const ctl = signal ? null : new AbortController()
+  const timer = ctl && setTimeout(() => ctl.abort(), timeoutMs)
   try {
-    return await fetchFn(url, { ...init, headers: { ...(init?.headers ?? {}), 'x-goog-api-key': apiKey }, signal: ctl.signal })
+    return await fetchFn(url, { ...init, headers: { ...(init?.headers ?? {}), 'x-goog-api-key': apiKey }, signal: signal ?? ctl.signal })
   } catch (e) {
     const who = /models\/([^:?]+):/.exec(url)?.[1] ?? 'Gemini'
     if (e?.name === 'AbortError') throw new GeminiError(`${who} did not answer within ${Math.round(timeoutMs / 1000)} seconds.`)
     throw new GeminiError(`Could not reach Gemini: ${e?.message ?? e}`)
-  } finally { clearTimeout(timer) }
+  } finally { if (timer) clearTimeout(timer) }
+}
+
+/** True once the text so far is a whole analysis: the outer object only closes
+ *  at the very end, so no shorter prefix of the answer parses. */
+function answered(text) {
+  const t = text.trim()
+  if (!/[}`]$/.test(t)) return false
+  try { parseBrief(t); return true } catch { return false }
+}
+
+/** Reads the streamed answer (server-sent events), and stops as soon as it is
+ *  a whole analysis: in JSON mode a model can finish its answer and then trail
+ *  off into blank space until the output cap, which would otherwise be waited out. */
+async function readAnswer(res, who, timeoutMs) {
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = '', text = '', finish = null, blocked = null
+  const take = (line) => {
+    line = line.trim()
+    if (!line.startsWith('data:')) return
+    let j
+    try { j = JSON.parse(line.slice(5)) } catch { return }
+    const cand = j?.candidates?.[0]
+    text += (cand?.content?.parts ?? []).filter((p) => !p?.thought).map((p) => p?.text ?? '').join('')
+    finish = cand?.finishReason ?? finish
+    blocked = j?.promptFeedback?.blockReason ?? blocked
+  }
+  try {
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      for (let i; (i = buf.indexOf('\n')) >= 0;) { take(buf.slice(0, i)); buf = buf.slice(i + 1) }
+      if (answered(text)) { reader.cancel().catch(() => {}); return { text, finish, blocked } }
+      if (text.length - text.trimEnd().length > 2000) {
+        reader.cancel().catch(() => {})
+        throw new GeminiError(`${who} trailed off into blank space before finishing the analysis. Ask again.`)
+      }
+    }
+    take(buf)
+  } catch (e) {
+    if (e instanceof GeminiError) throw e
+    const secs = Math.round(timeoutMs / 1000)
+    if (e?.name === 'AbortError') {
+      throw new GeminiError(text.trim()
+        ? `${who} was still writing after ${secs} seconds (${text.trim().length} characters so far).`
+        : `${who} sent nothing in ${secs} seconds.`)
+    }
+    throw new GeminiError(`The answer from ${who} broke off: ${e?.message ?? e}`)
+  }
+  return { text, finish, blocked }
 }
 
 async function errorMessage(res) {
@@ -179,31 +230,32 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
     generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 32768,
                         ...(think && thinkingFor(n) ? { thinkingConfig: thinkingFor(n) } : {}) },
   })
-  const ask = (n, think = true) => call(fetchFn, `${API}/${n}:generateContent`, apiKey,
-    { method: 'POST', headers: { 'content-type': 'application/json' }, body: body(n, think) }, timeoutMs)
-  let res = await ask(name)
-  let note = null
-  if (res.status === 404 && configured) {
-    name = await newestFlash(apiKey, fetchFn)
-    note = `${configured.replace('models/', '')} is not available, so ${name.replace('models/', '')} was used`
-    res = await ask(name)
-  }
-  // a model that does not take this thinking setting is asked again without it
-  if (res.status === 400 && thinkingFor(name)) {
-    const msg = await errorMessage(res)
-    if (!/thinking/i.test(msg)) throw explainStatus(400, msg)
-    res = await ask(name, false)
-  }
-  if (!res.ok) throw await explain(res)
-  const j = await res.json()
-  const cand = j?.candidates?.[0]
-  const text = (cand?.content?.parts ?? []).map((p) => p?.text ?? '').join('')
-  if (!text) {
-    const why = cand?.finishReason ?? j?.promptFeedback?.blockReason ?? 'no text'
-    throw new GeminiError(`Gemini returned no analysis (${why}).`)
-  }
-  if (cand?.finishReason === 'MAX_TOKENS') throw new GeminiError('Gemini ran out of room before finishing the analysis. Ask again.')
-  const brief = parseBrief(text)
-  if (note) brief.cautions = [note, ...brief.cautions].slice(0, 6)
-  return { model: name.replace('models/', ''), brief }
+  // one clock for the whole answer, streamed, not just until it starts
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), timeoutMs)
+  try {
+    const ask = (n, think = true) => call(fetchFn, `${API}/${n}:streamGenerateContent?alt=sse`, apiKey,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: body(n, think) }, timeoutMs, ctl.signal)
+    let res = await ask(name)
+    let note = null
+    if (res.status === 404 && configured) {
+      name = await newestFlash(apiKey, fetchFn)
+      note = `${configured.replace('models/', '')} is not available, so ${name.replace('models/', '')} was used`
+      res = await ask(name)
+    }
+    // a model that does not take this thinking setting is asked again without it
+    if (res.status === 400 && thinkingFor(name)) {
+      const msg = await errorMessage(res)
+      if (!/thinking/i.test(msg)) throw explainStatus(400, msg)
+      res = await ask(name, false)
+    }
+    if (!res.ok) throw await explain(res)
+    const who = name.replace('models/', '')
+    const { text, finish, blocked } = await readAnswer(res, who, timeoutMs)
+    if (!text.trim()) throw new GeminiError(`Gemini returned no analysis (${finish ?? blocked ?? 'no text'}).`)
+    if (finish === 'MAX_TOKENS' && !answered(text)) throw new GeminiError('Gemini ran out of room before finishing the analysis. Ask again.')
+    const brief = parseBrief(text)
+    if (note) brief.cautions = [note, ...brief.cautions].slice(0, 6)
+    return { model: who, brief }
+  } finally { clearTimeout(timer) }
 }
