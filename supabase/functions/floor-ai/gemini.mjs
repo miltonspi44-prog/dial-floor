@@ -154,7 +154,8 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
   const body = JSON.stringify({
     systemInstruction: { parts: [{ text: SYSTEM }] },
     contents: [{ role: 'user', parts: [{ text: buildPrompt(snapshot) }] }],
-    generationConfig: { temperature: 0.3, responseMimeType: 'application/json', maxOutputTokens: 8192 },
+    // newer Flash models think before they answer, and the thinking counts against this cap
+    generationConfig: { temperature: 0.3, responseMimeType: 'application/json', maxOutputTokens: 32768 },
   })
   const ask = (n) => call(fetchFn, `${API}/${n}:generateContent`, apiKey,
     { method: 'POST', headers: { 'content-type': 'application/json' }, body }, timeoutMs)
@@ -173,6 +174,7 @@ export async function generateBrief({ apiKey, model, snapshot, fetchFn = fetch, 
     const why = cand?.finishReason ?? j?.promptFeedback?.blockReason ?? 'no text'
     throw new GeminiError(`Gemini returned no analysis (${why}).`)
   }
+  if (cand?.finishReason === 'MAX_TOKENS') throw new GeminiError('Gemini ran out of room before finishing the analysis. Ask again.')
   const brief = parseBrief(text)
   if (note) brief.cautions = [note, ...brief.cautions].slice(0, 6)
   return { model: name.replace('models/', ''), brief }

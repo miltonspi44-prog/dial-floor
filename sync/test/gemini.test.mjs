@@ -89,3 +89,9 @@ test('a refused key, a spent quota and a missing key each say what to do', async
   await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: quota }), /quota/)
   await assert.rejects(generateBrief({ apiKey: '', model: '', snapshot: {} }), /GEMINI_API_KEY is not set/)
 })
+
+test('an answer cut off by the output cap is reported as such, not as broken JSON', async () => {
+  const cut = { candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"headline":"h","summ' }] } }] }
+  const f = fakeFetch([[/generateContent$/, { status: 200, body: cut }]])
+  await assert.rejects(generateBrief({ apiKey: 'k', model: 'gemini-3-flash', snapshot: {}, fetchFn: f }), /ran out of room/)
+})
