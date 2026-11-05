@@ -96,6 +96,11 @@ export default function Lists() {
   // the rules match in all. A list takes any of the trades picked, and any of
   // the sources picked.
   const [counts, setCounts] = useState<{ trades: { key: string; n: number }[]; sources: { key: string; n: number }[]; total: number } | null>(null)
+  // The dropdowns are built from these counts, so a count that failed quietly left
+  // them empty with nothing on screen to say why (0044). The rules the counts on
+  // screen were made for, and what went wrong when they did not come.
+  const [counted, setCounted] = useState<string | null>(null)
+  const [countsErr, setCountsErr] = useState<string | null>(null)
   const [pickedTrades, setPickedTrades] = useState<string[]>([])
   const [pickedSources, setPickedSources] = useState<string[]>([])
 
@@ -162,11 +167,19 @@ export default function Lists() {
   const countKey = JSON.stringify(countRules)
   useEffect(() => {
     let live = true
-    supabase.rpc('builder_counts', { p_rules: JSON.parse(countKey) }).then(({ data }) => {
-      if (live && data) setCounts(data as typeof counts)
+    supabase.rpc('builder_counts', { p_rules: JSON.parse(countKey) }).then(({ data, error: e }) => {
+      if (!live) return
+      setCounted(countKey)
+      // The last good counts stay up: the options they hold are still trades and
+      // sources that exist, so the manager can go on picking and build.
+      if (e) { setCountsErr(`The trade and source counts did not load: ${e.message}`); return }
+      setCountsErr(null)
+      if (data) setCounts(data as typeof counts)
     })
     return () => { live = false }
   }, [countKey, reload])
+  // the counts on screen answer an older set of rules than the form now holds
+  const counting = counted !== countKey
 
   function pickTrade(key: string) { if (key && !pickedTrades.includes(key)) setPickedTrades([...pickedTrades, key]) }
   function pickSource(key: string) { if (key && !pickedSources.includes(key)) setPickedSources([...pickedSources, key]) }
@@ -350,13 +363,13 @@ export default function Lists() {
           <label>Area code<input style={{ width: 120 }} value={form.areaCode} onChange={(e) => setForm({ ...form, areaCode: e.target.value })}
             placeholder="305 or 305,786" inputMode="numeric" title="The first three digits of the number; several separated by commas" /></label>
           <label>Trade<select value="" onChange={(e) => pickTrade(e.target.value)} title="Pick as many as you like; the list takes leads in any of them">
-            <option value="">{pickedTrades.length ? 'add another trade…' : 'any trade — or pick…'}</option>
+            <option value="">{!counts && counting ? 'counting…' : pickedTrades.length ? 'add another trade…' : 'any trade — or pick…'}</option>
             {(counts?.trades ?? []).filter((t) => !pickedTrades.includes(t.key)).map((t) => (
               <option key={t.key} value={t.key}>{tradeWord(t.key)} ({t.n})</option>
             ))}
           </select></label>
           <label>Source<select value="" onChange={(e) => pickSource(e.target.value)} title="Where the lead came from; pick as many as you like">
-            <option value="">{pickedSources.length ? 'add another source…' : 'any source — or pick…'}</option>
+            <option value="">{!counts && counting ? 'counting…' : pickedSources.length ? 'add another source…' : 'any source — or pick…'}</option>
             {(counts?.sources ?? []).filter((s) => !pickedSources.includes(s.key)).map((s) => (
               <option key={s.key} value={s.key}>{s.key} ({s.n})</option>
             ))}
@@ -376,7 +389,7 @@ export default function Lists() {
             {pickedTrades.length > 0 && (
               <span className="picks"><span className="muted small">Trades (any of):</span>
                 {pickedTrades.map((k) => (
-                  <span key={k} className="pickchip">{tradeWord(k)} <span className="muted">({countOf(counts?.trades, k)})</span>
+                  <span key={k} className="pickchip">{tradeWord(k)}{!countsErr && <span className="muted"> ({countOf(counts?.trades, k)})</span>}
                     <button type="button" aria-label={`Remove ${tradeWord(k)}`} onClick={() => setPickedTrades(pickedTrades.filter((x) => x !== k))}>×</button>
                   </span>
                 ))}
@@ -386,7 +399,7 @@ export default function Lists() {
             {pickedSources.length > 0 && (
               <span className="picks"><span className="muted small">Sources (any of):</span>
                 {pickedSources.map((k) => (
-                  <span key={k} className="pickchip">{k} <span className="muted">({countOf(counts?.sources, k)})</span>
+                  <span key={k} className="pickchip">{k}{!countsErr && <span className="muted"> ({countOf(counts?.sources, k)})</span>}
                     <button type="button" aria-label={`Remove ${k}`} onClick={() => setPickedSources(pickedSources.filter((x) => x !== k))}>×</button>
                   </span>
                 ))}
@@ -395,10 +408,13 @@ export default function Lists() {
             )}
           </div>
         )}
-        {counts && (
+        {countsErr && <p className="warnline" style={{ margin: '8px 0 0' }}>{countsErr}</p>}
+        {!countsErr && counts && (
           <p className="small muted" style={{ margin: '8px 0 0' }}>
-            {counts.total.toLocaleString()} lead{counts.total === 1 ? '' : 's'} match these rules
-            {form.intent || form.minScore || form.mobileFirst ? ' before the intent, score and mobile rules' : ''}; the list takes up to {Number(form.limit) || 200}.
+            {counting ? 'Counting…' : <>
+              {counts.total.toLocaleString()} lead{counts.total === 1 ? '' : 's'} match these rules
+              {form.intent || form.minScore || form.mobileFirst ? ' before the intent, score and mobile rules' : ''}; the list takes up to {Number(form.limit) || 200}.
+            </>}
           </p>
         )}
         {agentError && <p className="warnline" style={{ marginBottom: 0 }}>{agentError}</p>}
