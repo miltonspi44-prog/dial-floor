@@ -167,6 +167,19 @@ project's public URL and publishable key.
   matching work without it. The Dial page shows the lead's pickup and win
   chance against average, and the list builder's "best leads first (AI)" orders a
   list by chance of a win.
+  - **Teaching it** (0044, the AI page's *Talk & teach* and *Where it went wrong*
+    tabs): a manager teaches **lessons** ("roofing leads in FL are likelier to
+    convert, because …"), which multiply the score of every lead with all the
+    named traits on top of the data and are checked against the last 90 days of
+    calls; marks single leads **good** (×2) or **bad** (×¼); marks the analysis's
+    findings **right** or **wrong**; and **talks to Gemini**, which answers from
+    the floor's numbers, says whether the record agrees, and proposes lessons to
+    save in one click. Gemini reads every lesson, verdict and correction (traits
+    only, never a lead's name or number) before each analysis and reply. Each dial
+    keeps the score its lead had, so the review lists wins it rated low and hard
+    noes it rated high, and how its scores held up. Teaching reaches the scores
+    within a minute (a minute job rescores when asked, and hourly regardless). A
+    chance given recorded by hand counts as a win on the lead's last dial.
 - **Radar** (managers): the morning run (the scheduler at 13:00 UTC, or the
   first Dial or Radar page of the business day) ranks the pool and *proposes*
   every free agent their best leads as a "Radar" list (`radar_deal_per_agent`,

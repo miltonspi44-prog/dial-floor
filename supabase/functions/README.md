@@ -9,7 +9,7 @@ anybody's memory.
 | `zoom-webhook` | **false** | Zoom signs its deliveries with `ZOOM_WEBHOOK_SECRET_TOKEN`; it cannot carry a Supabase JWT. The function checks the signature (constant-time) and a freshness window itself. |
 | `admin-users`  | **true**  | Only a signed-in manager may call it; it re-checks the caller's profile server-side on top. |
 | `sync-console` | **false** | pg_cron calls it (migration 0034) with the `x-cron-secret` header; cron carries no JWT. The secret is the whole gate. |
-| `floor-ai`     | **false** | `ai_brief_request()` (migration 0043) calls it through pg_net with the same `x-cron-secret` header, for the 12:35 UTC job and for a manager's "Ask Gemini" button alike. |
+| `floor-ai`     | **false** | `ai_brief_request()` (migration 0043) and `ai_chat_send()` (0044) call it through pg_net with the same `x-cron-secret` header, for the 12:35 UTC job, a manager's "Ask Gemini" button, and each message in the AI page's conversation. |
 
 Deploying with the wrong flag is the failure mode item 51 was about: a default
 `verify_jwt = true` redeploy of `zoom-webhook` makes Zoom's deliveries bounce

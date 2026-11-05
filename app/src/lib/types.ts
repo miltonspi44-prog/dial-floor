@@ -546,7 +546,10 @@ export function dispositionLabel(code: string | null): string {
 }
 
 /** 0043: the AI floor. A lift is a smoothed rate against the floor's (1 = average). */
-export interface AiReason { kind: string; value: string; dials: number; answer: number; win: number }
+export interface AiReason {
+  kind: string; value: string; dials?: number; answer?: number; win: number
+  id?: number; note?: string   // 0044: kind 'lesson' (a lesson the lead fits) or 'mark' (the manager's verdict on it)
+}
 export interface AiSegment { value: string; dials: number; convos: number; wins: number; answer_lift: number; win_lift: number }
 export interface AiFit { kind: string; value: string; convos: number; lift: number }
 export interface AiAgent {
@@ -557,6 +560,7 @@ export interface AiTopLead {
   lead_id: number; name: string; phone: string | null; city: string | null; state: string | null; trade: string; tz: string | null
   p_answer: number; p_win: number; answer_lift: number; win_lift: number; best_hour: number | null
   reasons: AiReason[]; callable_now: boolean
+  traits?: Record<string, string>; mark?: AiMark | null
 }
 export interface AiListIdea { name: string; rules: Record<string, string | number>; why: string }
 export interface AiBriefDoc {
@@ -565,6 +569,7 @@ export interface AiBriefDoc {
   where_to_call: { segment: string; when: string; why: string }[]
   agent_matching: { agent: string; focus: string; why: string }[]
   lists: AiListIdea[]
+  lessons?: AiLessonDraft[]
   cautions: string[]
 }
 export interface AiFloorData {
@@ -581,4 +586,39 @@ export interface AiFloorData {
   brief: { id: number; created_at: string; source: string; model: string | null; brief: AiBriefDoc } | null
   last_attempt: { id: number; created_at: string; source: string; ok: boolean; model: string | null; error: string | null } | null
   requested: { at: string; by: string | null } | null
+}
+
+/** 0044: teaching the AI floor. */
+export interface AiMark { verdict: 'good' | 'bad'; note: string | null }
+/** A lesson as proposed (by Gemini, or prefilled from a lead) before it is saved. */
+export interface AiLessonDraft { conditions: Record<string, string>; effect: string | null; pickup: string | null; why: string }
+export interface AiLessonStats { at: string; leads: number; dials: number; convos: number; wins: number; win_lift: number; answer_lift: number }
+export interface AiLesson {
+  id: number; conditions: Record<string, string>; win_mult: number; answer_mult: number; note: string
+  source: string; active: boolean; created_at: string; updated_at: string; author: string | null
+  stats: AiLessonStats | null; pending: boolean
+}
+export interface AiMarkRow {
+  lead_id: number; name: string; city: string | null; state: string | null; trade: string
+  verdict: 'good' | 'bad'; note: string | null; at: string; author: string | null; won: boolean
+}
+export interface AiCorrection { id: number; brief_id: number | null; item: string; verdict: 'right' | 'wrong'; note: string | null; at: string; author: string | null }
+export interface AiTeachData {
+  lessons: AiLesson[]; marks: AiMarkRow[]; corrections: AiCorrection[]
+  rescore: { wanted: string | null; scored: string | null }
+}
+export interface AiChatMessage {
+  id: number; at: string; role: 'manager' | 'ai'; author: string | null; text: string
+  proposals: { lessons?: AiLessonDraft[]; lists?: AiListIdea[] }; model: string | null; error: string | null
+}
+export interface AiChatThread { thread: number; threads: number; messages: AiChatMessage[]; waiting: boolean }
+export interface AiReviewRow {
+  kind: 'underrated' | 'overrated'; lead_id: number; name: string; city: string | null; state: string | null; trade: string
+  traits: Record<string, string>; at: string; outcome: string; agent: string | null
+  p_win: number; win_x: number; at_dial: boolean; reasons: AiReason[]; mark: AiMark | null
+}
+export interface AiReviewData {
+  days: number; win_rate: number; rows: AiReviewRow[]
+  calibration: { band: string; dials: number; wins: number; expected: number }[]
+  stamped_since: string | null
 }

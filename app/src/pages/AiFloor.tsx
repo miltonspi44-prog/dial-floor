@@ -1,42 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { supabase, fmtPhone } from '../lib/supabase'
 import { hourLabel } from '../lib/types'
-import type { AiFloorData, AiListIdea, AiReason, AiSegment } from '../lib/types'
+import type { AiCorrection, AiFloorData, AiListIdea, AiSegment, AiTeachData } from '../lib/types'
+import { KINDS, KIND_LABEL, lift, pct, reasonText, rulesText, tone, word } from '../lib/ai'
 import LoadError from '../components/LoadError'
+import AiLessonEditor from '../components/AiLessonEditor'
+import type { LessonSeed } from '../components/AiLessonEditor'
+import AiTeach from '../components/AiTeach'
+import AiReview from '../components/AiReview'
+import { CorrectionControl, MarkControl, ProposedLesson } from '../components/AiControls'
 
-/** "1.4×" — a smoothed rate against the floor's own. */
-function lift(x: number | null | undefined): string {
-  return x == null ? '—' : `${x >= 10 ? Math.round(x) : x.toFixed(x >= 2 ? 1 : 2)}×`
-}
-function tone(x: number | null | undefined): string {
-  return x == null ? '' : x >= 1.15 ? 'up' : x <= 0.87 ? 'down' : ''
-}
-function pct(x: number | null | undefined, digits = 1): string {
-  return x == null ? '—' : `${(x * 100).toFixed(digits)}%`
-}
-function word(s: string): string { return s.replace(/_/g, ' ') }
-
-const KIND_LABEL: Record<string, string> = {
-  trade: 'Trade', state: 'State', area: 'Area code', phone: 'Phone type', website: 'Website', source: 'Source',
-  tier: 'Tier', reviews: 'Reviews', score: 'Scraper score',
-}
-const KINDS = ['trade', 'state', 'area', 'phone', 'website', 'source', 'tier', 'reviews', 'score']
-
-function reasonText(r: AiReason): string {
-  const what = r.kind === 'trade' ? word(r.value) : r.kind === 'area' ? `area ${r.value}`
-    : r.kind === 'website' ? (r.value === 'none' ? 'no website' : `${r.value} website`)
-      : r.kind === 'phone' ? `${r.value} phone` : r.kind === 'reviews' ? `${r.value} reviews`
-        : r.kind === 'score' ? `score ${r.value}` : r.kind === 'tier' ? `tier ${r.value}` : r.value
-  return `${what}: ${lift(r.win)} wins, ${lift(r.answer)} pickups`
-}
-
-function rulesText(rules: AiListIdea['rules']): string {
-  return Object.entries(rules).map(([k, v]) => `${word(k)} ${k === 'category' ? word(String(v)) : v}`).join(' · ')
-}
+const TABS = [
+  { key: 'analysis', label: 'Analysis' },
+  { key: 'teach', label: 'Talk & teach' },
+  { key: 'review', label: 'Where it went wrong' },
+]
 
 /** 0043: the AI floor — who answers, who converts, who should call them, and
- *  Gemini's reading of it all. */
+ *  Gemini's reading of it all. 0044: and the manager teaching it, in three tabs. */
 export default function AiFloor() {
   const [d, setD] = useState<AiFloorData | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -44,6 +26,11 @@ export default function AiFloor() {
   const [busy, setBusy] = useState(false)
   const [waiting, setWaiting] = useState<number | null>(null) // the last attempt id when an analysis was asked for
   const [toast, setToast] = useState<string | null>(null)
+  const [teach, setTeach] = useState<AiTeachData | null>(null)
+  const [seed, setSeed] = useState<LessonSeed | null>(null)
+  const [version, setVersion] = useState(0)
+  const [params, setParams] = useSearchParams()
+  const tab = TABS.some((t) => t.key === params.get('tab')) ? params.get('tab')! : 'analysis'
   const poll = useRef<number | null>(null)
 
   function say(m: string) { setToast(m); window.setTimeout(() => setToast(null), 4000) }
@@ -56,7 +43,39 @@ export default function AiFloor() {
     return data as AiFloorData
   }, [])
 
-  useEffect(() => { load() }, [load])
+  const loadTeach = useCallback(async () => {
+    const { data, error } = await supabase.rpc('ai_teach')
+    if (error) { setErr(error.message); return null }
+    setTeach(data as AiTeachData)
+    return data as AiTeachData
+  }, [])
+
+  useEffect(() => { load(); loadTeach() }, [load, loadTeach])
+
+  /** After any teaching: say so, and show it everywhere it shows. */
+  function changed(m: string) {
+    say(m)
+    loadTeach()
+    load()
+    setVersion((v) => v + 1)
+  }
+
+  // a lesson or a verdict asked for a rescore: look every 8 seconds until it's done
+  const rescoring = !!teach?.rescore.wanted && (!teach.rescore.scored || new Date(teach.rescore.wanted) > new Date(teach.rescore.scored))
+  useEffect(() => {
+    if (!rescoring) return
+    let n = 0
+    const id = window.setInterval(async () => {
+      n++
+      const t = await loadTeach()
+      const done = t && !(t.rescore.wanted && (!t.rescore.scored || new Date(t.rescore.wanted) > new Date(t.rescore.scored)))
+      if (done || n >= 30) {
+        window.clearInterval(id)
+        if (done) { load(); setVersion((v) => v + 1) }
+      }
+    }, 8000)
+    return () => window.clearInterval(id)
+  }, [rescoring, load, loadTeach])
   useEffect(() => () => { if (poll.current) window.clearInterval(poll.current) }, [])
 
   async function ask() {
@@ -103,14 +122,19 @@ export default function AiFloor() {
     load()
   }
 
-  if (err) return <div className="page"><LoadError what="the AI floor" error={err} onRetry={load} /></div>
-  if (!d) return <div className="page"><div className="emptystate">Loading the AI floor…</div></div>
+  if (err) return <div className="page"><LoadError what="the AI floor" error={err} onRetry={() => { load(); loadTeach() }} /></div>
+  if (!d || !teach) return <div className="page"><div className="emptystate">Loading the AI floor…</div></div>
 
   const m = d.model
   const brief = d.brief
   const failed = d.last_attempt && !d.last_attempt.ok && (!brief || d.last_attempt.id > brief.id) ? d.last_attempt : null
   const keyMissing = failed?.error?.includes('GEMINI_API_KEY')
   const segs: AiSegment[] = d.segments[kind] ?? []
+  const said = (item: string): AiCorrection | undefined =>
+    brief ? teach.corrections.find((c) => c.brief_id === brief.id && c.item === item) : undefined
+  const yourWord = (item: string) => brief && (
+    <CorrectionControl briefId={brief.id} item={item} correction={said(item)} onDone={changed} />
+  )
 
   return (
     <div className="page aifloor">
@@ -119,9 +143,22 @@ export default function AiFloor() {
         <span className="muted small">
           Learned from {m.dials?.toLocaleString() ?? 0} dials, {m.convos?.toLocaleString() ?? 0} conversations and {m.wins ?? 0} wins
           in the last {m.days ?? 90} days · {m.scored?.toLocaleString() ?? 0} leads scored
-          {m.at ? ` at ${new Date(m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''} · scores refresh hourly
+          {m.at ? ` at ${new Date(m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''} · scores refresh hourly, and within a minute of anything you teach it
         </span>
       </div>
+      <div className="rangebar aitabs" role="tablist" aria-label="AI floor">
+        {TABS.map((t) => (
+          <button key={t.key} role="tab" aria-selected={tab === t.key} className={`rangebtn ${tab === t.key ? 'active' : ''}`}
+            onClick={() => setParams(t.key === 'analysis' ? {} : { tab: t.key }, { replace: true })}>
+            {t.label}
+            {t.key === 'teach' && teach.lessons.filter((l) => l.active).length > 0 && <span className="tabcount">{teach.lessons.filter((l) => l.active).length}</span>}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'teach' && <AiTeach teach={teach} say={say} changed={changed} openEditor={setSeed} buildIdea={buildIdea} />}
+      {tab === 'review' && <AiReview changed={changed} openEditor={setSeed} version={version} />}
+      {tab === 'analysis' && (<>
 
       <div className="card aibrief">
         <div className="sectionhead" style={{ margin: '0 0 8px' }}>
@@ -144,14 +181,18 @@ export default function AiFloor() {
             <p>{brief.brief.summary}</p>
             {brief.brief.findings.length > 0 && (
               <ul className="ailist">
-                {brief.brief.findings.map((f, i) => <li key={i}><b>{f.title}</b> {f.detail} <span className="muted small">{f.evidence}</span></li>)}
+                {brief.brief.findings.map((f, i) => (
+                  <li key={i}><b>{f.title}</b> {f.detail} <span className="muted small">{f.evidence}</span> {yourWord(`${f.title}: ${f.detail}`)}</li>
+                ))}
               </ul>
             )}
             {brief.brief.where_to_call.length > 0 && (
               <>
                 <div className="kpilabel" style={{ marginTop: 12 }}>Where and when to call</div>
                 <ul className="ailist">
-                  {brief.brief.where_to_call.map((w, i) => <li key={i}><b>{w.segment}</b>{w.when ? ` · ${w.when}` : ''} <span className="muted small">{w.why}</span></li>)}
+                  {brief.brief.where_to_call.map((w, i) => (
+                    <li key={i}><b>{w.segment}</b>{w.when ? ` · ${w.when}` : ''} <span className="muted small">{w.why}</span> {yourWord(`Call ${w.segment}${w.when ? `, ${w.when}` : ''}`)}</li>
+                  ))}
                 </ul>
               </>
             )}
@@ -159,7 +200,9 @@ export default function AiFloor() {
               <>
                 <div className="kpilabel" style={{ marginTop: 12 }}>Who should call what</div>
                 <ul className="ailist">
-                  {brief.brief.agent_matching.map((a, i) => <li key={i}><b>{a.agent}</b>: {a.focus} <span className="muted small">{a.why}</span></li>)}
+                  {brief.brief.agent_matching.map((a, i) => (
+                    <li key={i}><b>{a.agent}</b>: {a.focus} <span className="muted small">{a.why}</span> {yourWord(`${a.agent} should get ${a.focus}`)}</li>
+                  ))}
                 </ul>
               </>
             )}
@@ -171,13 +214,26 @@ export default function AiFloor() {
                     <li key={i}>
                       <b>{l.name}</b> <span className="muted small">{rulesText(l.rules)}</span>
                       <button className="btn ghost small" style={{ marginLeft: 8 }} disabled={busy} onClick={() => buildIdea(l)}>build it</button>
+                      {' '}{yourWord(`List worth building: ${l.name} (${rulesText(l.rules)})`)}
                       <div className="muted small">{l.why}</div>
                     </li>
                   ))}
                 </ul>
               </>
             )}
+            {(brief.brief.lessons ?? []).length > 0 && (
+              <>
+                <div className="kpilabel" style={{ marginTop: 12 }}>Lessons it suggests teaching the scores</div>
+                {brief.brief.lessons!.map((x, i) => (
+                  <ProposedLesson key={i} draft={x} source="brief" taught={teach.lessons} onSaved={changed} onEdit={setSeed} />
+                ))}
+              </>
+            )}
             {brief.brief.cautions.length > 0 && <p className="muted small" style={{ marginBottom: 0 }}>Caution: {brief.brief.cautions.join(' · ')}</p>}
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              Mark a finding <b>right</b> or <b>wrong</b> and Gemini reads it before its next analysis; to argue with it, use the{' '}
+              <button className="copybtn" onClick={() => setParams({ tab: 'teach' }, { replace: true })}>Talk & teach</button> tab.
+            </p>
           </>
         ) : !failed && (
           <p className="muted small" style={{ margin: 0 }}>
@@ -289,7 +345,7 @@ export default function AiFloor() {
       <div className="card">
         <div className="tablewrap">
           <table className="data">
-            <thead><tr><th>Lead</th><th>Where</th><th>Trade</th><th>Pickup</th><th>Win</th><th>Best hour</th><th>Why</th></tr></thead>
+            <thead><tr><th>Lead</th><th>Where</th><th>Trade</th><th>Pickup</th><th>Win</th><th>Best hour</th><th>Why</th><th>Your word</th></tr></thead>
             <tbody>
               {d.top_leads.map((l) => (
                 <tr key={l.lead_id}>
@@ -300,9 +356,10 @@ export default function AiFloor() {
                   <td className={`lift ${tone(l.win_lift)}`}>{lift(l.win_lift)}</td>
                   <td>{l.best_hour != null ? `${hourLabel(l.best_hour)} theirs` : '—'}</td>
                   <td className="small why">{l.reasons.map(reasonText).join('; ') || <span className="muted">near average on every trait</span>}</td>
+                  <td className="small teachcell"><MarkControl leadId={l.lead_id} mark={l.mark} onDone={changed} /></td>
                 </tr>
               ))}
-              {!d.top_leads.length && <tr><td colSpan={7} className="muted">No dialable leads are scored yet.</td></tr>}
+              {!d.top_leads.length && <tr><td colSpan={8} className="muted">No dialable leads are scored yet.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -314,11 +371,15 @@ export default function AiFloor() {
         )}
       </div>
 
+      </>)}
+
       <p className="muted small">
-        Gemini sees only these aggregates: rates, counts and lifts, and each agent's name and record. It never sees a lead's name, number or call notes.
+        Gemini sees only aggregates (rates, counts and lifts, and each agent's name and record) and what you teach it: your lessons, your
+        corrections, and the traits (never the name, number or notes) of leads you judge or it misjudged.
         {d.outside_calls_7d > 0 && ` ${d.outside_calls_7d} calls placed straight from Zoom this week are not in any of this.`}
       </p>
-      {toast && <div className="toast" role="status">{toast}</div>}
+      {seed && <AiLessonEditor seed={seed} onClose={() => setSeed(null)} onSaved={changed} />}
+      {toast && <div className={seed ? 'toast top' : 'toast'} role="status">{toast}</div>}
     </div>
   )
 }

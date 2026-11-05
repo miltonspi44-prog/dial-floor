@@ -1,7 +1,7 @@
 // floor-ai's Gemini client, without a key: a fake fetch stands in for Google.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pickModel, parseBrief, firstObject, cleanRules, buildPrompt, generateBrief, probe, GeminiError } from '../../supabase/functions/floor-ai/gemini.mjs'
+import { pickModel, parseBrief, parseChat, buildChat, cleanLesson, firstObject, cleanRules, buildPrompt, generateBrief, generateChat, probe, GeminiError } from '../../supabase/functions/floor-ai/gemini.mjs'
 
 const gen = ['generateContent']
 
@@ -199,7 +199,7 @@ test('a busy model is passed over for the next newest Flash, and the analysis sa
 
   const allBusy = fakeFetch([[/\/models\?/, listing], [/:streamGenerateContent/, busy]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: allBusy, retryMs: 1, maxTries: 8 }),
-    /No Gemini model could write the analysis just now: gemini-3\.8-flash was busy \(503\) \(2 tries\); gemini-3\.7-flash was busy \(503\) \(2 tries\); gemini-3\.6-flash was busy \(503\) \(2 tries\); gemini-2\.5-flash was busy \(503\) \(2 tries\)\. Ask again/)
+    /No Gemini model could answer just now: gemini-3\.8-flash was busy \(503\) \(2 tries\); gemini-3\.7-flash was busy \(503\) \(2 tries\); gemini-3\.6-flash was busy \(503\) \(2 tries\); gemini-2\.5-flash was busy \(503\) \(2 tries\)\. Ask again/)
 })
 
 test('a model that never starts answering is passed over after the start limit', async () => {
@@ -252,4 +252,50 @@ test('an unreadable answer passes to the next model, and the error shows what ca
   const g = fakeFetch([[/\/models\?/, listing], [/:streamGenerateContent/, junk]])
   await assert.rejects(generateBrief({ apiKey: 'k', model: '', snapshot: {}, fetchFn: g, retryMs: 1, maxTries: 2 }),
     /The last unreadable answer: gemini-3\.7-flash wrote 47 characters \(STOP\) beginning "Sure! Analysis/)
+})
+
+test('a lesson Gemini proposes is checked like the database checks it, or dropped', () => {
+  assert.deepEqual(cleanLesson({ traits: { trade: 'Roofing, siding', state: ['fl', 'ga'], area: 305, city: 'Miami' }, effect: 'more', pickup: 'same', why: 'storms' }),
+    { conditions: { trade: 'roofing,siding', state: 'FL,GA', area: '305' }, effect: 'more', pickup: null, why: 'storms' })
+  assert.equal(cleanLesson({ traits: { state: 'Florida' }, effect: 'more' }), null, 'no valid trait')
+  assert.equal(cleanLesson({ traits: { state: 'FL' }, effect: 'hugely' }), null, 'no known effect')
+  assert.deepEqual(cleanLesson({ traits: { phone: 'landline' }, pickup: 'less' })?.pickup, 'less', 'a pickup lesson alone is fine')
+  const b = parseBrief('{"headline":"h","summary":"s","lessons":[{"traits":{"state":"WA"},"effect":"more","why":"w"},{"traits":{},"effect":"more"}]}')
+  assert.equal(b.lessons.length, 1, 'the analysis carries its lessons, the empty one dropped')
+})
+
+test("the conversation alternates, ends with the manager, and carries the AI's own JSON back", () => {
+  const { system, contents } = buildChat({ snapshot: { model: { dials: 9 } }, history: [
+    { role: 'ai', text: 'stray greeting' },
+    { role: 'manager', text: 'Why WA?' },
+    { role: 'ai', text: 'Because remodelers.', proposals: { lessons: [{ conditions: { state: 'WA' } }] } },
+    { role: 'ai', text: '', error: 'busy' },
+    { role: 'manager', text: 'And FL?' },
+    { role: 'manager', text: 'Also GA.' },
+  ] })
+  assert.match(system, /"dials":9/)
+  assert.match(system, /"reply"/)
+  assert.deepEqual(contents.map((c) => c.role), ['user', 'model', 'user'])
+  assert.equal(contents[2].parts[0].text, 'And FL?\n\nAlso GA.')
+  assert.equal(JSON.parse(contents[1].parts[0].text).lessons[0].conditions.state, 'WA')
+  assert.throws(() => parseChat('{"reply":"","lessons":[]}'), /empty reply/)
+  const c = parseChat('{"reply":"Data agrees: 3 wins on 40 dials.","lessons":[{"traits":{"state":"FL","trade":"roofing"},"effect":"much_more","why":"storms"}],"lists":[{"name":"FL roofers","rules":{"state":"FL","category":"roofing"}}]}')
+  assert.equal(c.lessons[0].effect, 'much_more')
+  assert.equal(c.lists[0].rules.category, 'roofing')
+})
+
+test('the model that answered last is asked first, and a chat reply comes back', async () => {
+  const listing = { status: 200, body: { models: ['gemini-3.8-flash', 'gemini-3.6-flash']
+    .map((m) => ({ name: `models/${m}`, supportedGenerationMethods: gen })) } }
+  const reply = { status: 200, sse: [piece('{"reply":"Florida roofers: 1 win on 10 dials, too thin to tell.","lessons":[]}', 'STOP')] }
+  const seen = []
+  const f = fakeFetch([[/\/models\?/, listing], [/3\.6-flash:/, reply], [/3\.8-flash:/, { status: 503, body: {} }]], seen)
+  const out = await generateChat({ apiKey: 'k', model: '', prefer: 'gemini-3.6-flash', snapshot: {},
+    history: [{ role: 'manager', text: 'Are Florida roofers good?' }], fetchFn: f })
+  assert.equal(out.model, 'gemini-3.6-flash')
+  assert.match(out.chat.reply, /too thin/)
+  assert.ok(!seen.some((s) => /3\.8-flash:/.test(s.url)), 'the busy newest model was not tried first')
+  const sent = JSON.parse(seen.find((s) => /3\.6-flash:/.test(s.url)).init.body)
+  assert.equal(sent.contents[0].parts[0].text, 'Are Florida roofers good?')
+  await assert.rejects(generateChat({ apiKey: 'k', model: '', snapshot: {}, history: [], fetchFn: f }), /no message/)
 })

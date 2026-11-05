@@ -507,3 +507,71 @@ table.data tr.thin .minibar i { opacity: 0.45; }
 .aichip { margin-top: 6px; font-size: 13px; color: var(--muted); }
 .aichip b { color: var(--ink); }
 .aifloor td.why { min-width: 260px; }
+
+/* 0044: teaching the AI floor */
+.tag.bad { background: var(--bad-bg); color: var(--bad); }
+.aifloor .aitabs { margin: 0 0 14px; flex-wrap: wrap; }
+.aitabs .tabcount {
+  display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 6px; border-radius: 99px;
+  font-size: 11.5px; line-height: 18px; background: var(--accent-soft); color: var(--accent);
+}
+.aifloor .rescoring { padding: 10px 14px; background: var(--accent-soft); color: var(--accent); font-size: 13.5px; margin-bottom: 12px; }
+.aichat .chatnav { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.aichat .chatlog {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 460px; min-height: 120px; overflow-y: auto;
+  padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper);
+}
+.aichat .bubble {
+  max-width: min(680px, 92%); padding: 9px 12px; border-radius: 12px;
+  font-size: 14px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.aichat .bubble.me { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 4px; }
+.aichat .bubble.ai { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.aichat .bubble.thinking { color: var(--muted); font-style: italic; }
+.aichat .bubble .who { font-size: 11.5px; opacity: 0.75; margin-bottom: 2px; }
+.aichat .bubble .proposal { white-space: normal; }
+.aichat .starters { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.aichat .starter {
+  text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 99px;
+  padding: 5px 12px; font-size: 13px; color: var(--ink);
+}
+.aichat .starter:hover { border-color: var(--accent); background: var(--accent-soft); }
+.aichat .chatinput { display: flex; gap: 8px; align-items: flex-end; margin: 10px 0 4px; }
+.aichat .chatinput textarea { flex: 1; resize: vertical; font-size: 14px; line-height: 1.5; min-width: 0; }
+.aifloor .proposal {
+  margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+  border: 1px dashed var(--accent); background: var(--accent-soft); font-size: 13.5px; color: var(--ink);
+}
+.aifloor .proposal .kpilabel { display: inline; margin-right: 4px; }
+.aifloor .lessonlist { list-style: none; margin: 0; padding: 0; }
+.aifloor .lessonlist li { padding: 10px 0; border-top: 1px solid var(--line); }
+.aifloor .lessonlist li:first-child { border-top: 0; padding-top: 0; }
+.aifloor .lessonlist li.paused > div:first-child { color: var(--muted); }
+.aifloor .check.up { color: var(--ok); }
+.aifloor .check.down { color: var(--bad); }
+.aifloor .markform { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.aifloor .markform input { min-width: 180px; font-size: 13px; padding: 4px 8px; }
+.aifloor .markshow, .aifloor .corrshow { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.aifloor .markbtns, .aifloor .corrbtns { display: inline-flex; gap: 2px; flex-wrap: wrap; }
+.aifloor .corrbtns .copybtn { font-size: 12px; padding: 1px 6px; color: var(--muted); }
+.aifloor .corrbtns .copybtn:hover { color: var(--accent); }
+.aifloor td.teachcell { min-width: 170px; }
+.aifloor td.teachcell .btn { padding: 3px 8px; }
+.lessonform .traitrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.lessonform .traitname { width: 110px; font-weight: 600; font-size: 13.5px; }
+.lessonform .traitvals { flex: 1; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 200px; }
+.lessonform .choice {
+  border: 1px solid var(--line); background: var(--card); border-radius: 99px; padding: 3px 10px;
+  font-size: 13px; color: var(--ink); display: inline-flex; align-items: center; gap: 4px;
+}
+.lessonform .choice.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.lessonform .chipx { border: 0; background: transparent; color: inherit; font-size: 15px; line-height: 1; padding: 0 2px; }
+.lessonform .traitadd { width: 170px; font-size: 13px; padding: 4px 8px; }
+.lessonform .traitpick { margin-top: 8px; font-size: 13.5px; }
+.lessonform textarea { width: 100%; font-size: 14px; line-height: 1.5; resize: vertical; }
+.lessonform .lessonpreview { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--chip); font-size: 13.5px; }
+@media (max-width: 640px) {
+  .lessonform .traitname { width: 100%; }
+  .aichat .chatinput { flex-direction: column; align-items: stretch; }
+}
