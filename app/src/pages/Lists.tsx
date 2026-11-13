@@ -37,6 +37,13 @@ function tally(c: { count: number }[] | null): number {
 
 const STATES = ['', 'FL','GA','NC','SC','TN','VA','PA','OH','NY','NJ','MA','MD','CT','AL','KY','NH','ME','RI','DE','TX','WI','IL','IN','MI','AZ','CA','WA']
 const INTENTS = ['', 'no_website','social_only','free_subdomain','cheap_builder','broken_site','fresh_listing','review_rich','owner_mobile','never_answers','seasonal_window']
+// 0045: the "tries" rule, as build_list and builder_counts take it
+const TRIES = [
+  { key: '0', label: 'Not yet dialed' },
+  { key: '1', label: '1× no pickup' },
+  { key: '2', label: '2× no pickup' },
+  { key: '3+', label: '3+× no pickup' },
+]
 
 /** The status filter. 'open' is everything still in play, which is what this page
  *  has always shown; the rest let a manager go and find one list in particular. */
@@ -90,12 +97,14 @@ export default function Lists() {
   const [itemsErr, setItemsErr] = useState<string | null>(null)
   const [addQ, setAddQ] = useState('')
   const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
-  const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', intent: '', minScore: '', mobileFirst: false, aiOrder: true, limit: '200' })
+  const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', tries: '', intent: '', minScore: '', mobileFirst: false, aiOrder: true, limit: '200' })
   // 0041: the trades and sources on offer, counted under the rules picked so far
   // (tier first, then state and area code, then each other), and how many leads
   // the rules match in all. A list takes any of the trades picked, and any of
   // the sources picked.
-  const [counts, setCounts] = useState<{ trades: { key: string; n: number }[]; sources: { key: string; n: number }[]; total: number } | null>(null)
+  const [counts, setCounts] = useState<{
+    trades: { key: string; n: number }[]; sources: { key: string; n: number }[]; tries?: { key: string; n: number }[]; total: number
+  } | null>(null)
   const [pickedTrades, setPickedTrades] = useState<string[]>([])
   const [pickedSources, setPickedSources] = useState<string[]>([])
 
@@ -159,6 +168,7 @@ export default function Lists() {
   if (/^[2-9]\d{2}(\s*,\s*[2-9]\d{2})*$/.test(form.areaCode.trim())) countRules.area_code = form.areaCode.trim()
   if (pickedTrades.length) countRules.category = pickedTrades.join(',')
   if (pickedSources.length) countRules.source = pickedSources.join(',')
+  if (form.tries) countRules.tries = form.tries
   const countKey = JSON.stringify(countRules)
   useEffect(() => {
     let live = true
@@ -195,6 +205,8 @@ export default function Lists() {
     if (form.areaCode.trim()) rules.area_code = form.areaCode.trim()
     if (pickedTrades.length) rules.category = pickedTrades.join(',')
     if (pickedSources.length) rules.source = pickedSources.join(',')
+    // 0045: not yet dialed, or dialed 1, 2, 3+ times with nobody ever picking up
+    if (form.tries) rules.tries = form.tries
     if (form.tier) rules.tier = form.tier
     if (form.intent) rules.intent = form.intent
     if (form.minScore) rules.min_score = Number(form.minScore)
@@ -362,6 +374,14 @@ export default function Lists() {
             {(counts?.sources ?? []).filter((s) => !pickedSources.includes(s.key)).map((s) => (
               <option key={s.key} value={s.key}>{s.key} ({s.n})</option>
             ))}
+          </select></label>
+          <label>Pickups<select value={form.tries} onChange={(e) => setForm({ ...form, tries: e.target.value })}
+            title="How many times the lead has been dialed with nobody picking up; a lead someone has picked up for is in none of these">
+            <option value="">any</option>
+            {TRIES.map((t) => {
+              const n = counts?.tries?.find((x) => x.key === t.key)?.n
+              return <option key={t.key} value={t.key}>{t.label}{n != null ? ` (${n.toLocaleString()})` : counts?.tries ? ' (0)' : ''}</option>
+            })}
           </select></label>
           <label>Intent<select value={form.intent} onChange={(e) => setForm({ ...form, intent: e.target.value })}>
             {INTENTS.map((s) => <option key={s} value={s}>{s || 'any'}</option>)}
