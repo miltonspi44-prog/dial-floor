@@ -61,8 +61,13 @@ $$;
 
 revoke execute on function public.ai_sql(text), public.ai_schema() from public, anon, authenticated;
 grant execute on function public.ai_sql(text), public.ai_schema() to service_role;
+-- A function's new owner must be able to create in its schema, unless a
+-- superuser hands it over (Supabase's postgres isn't one): ai_reader may for
+-- the hand-over only, and keeps nothing but the two functions.
+grant create on schema public to ai_reader;
 alter function public.ai_sql(text) owner to ai_reader;
 alter function public.ai_schema() owner to ai_reader;
+revoke create on schema public from ai_reader;
 
 -- ------------------------------------------------------------------- memory --
 -- (0044's, naming the leads: Gemini can now look any of them up)
