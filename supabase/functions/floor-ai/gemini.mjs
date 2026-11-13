@@ -3,13 +3,13 @@
 // no imports, so Node's test runner checks it (sync/test/gemini.test.mjs)
 // and the edge function (Deno) ships it as it is.
 //
-// What goes to Gemini is ai_floor_snapshot(): aggregates only — rates, counts
-// and lifts by trade, state, area code and so on, each agent's record, and the
-// pool's makeup. No lead's name, number or call notes ever leave the database.
-// With it goes what the manager has taught (ai_memory, 0044): their lessons,
-// their verdicts on single leads (traits only), their corrections, and the
-// wins and hard noes the scores got wrong (traits only), so every analysis and
-// every reply in the AI page's conversation builds on what they have said.
+// What goes to Gemini up front is ai_floor_snapshot(): rates, counts and lifts
+// by trade, state, area code and so on, each agent's record, and the pool's
+// makeup; with it what the manager has taught (ai_memory, 0044): their lessons,
+// their verdicts on leads, their corrections, and the wins and hard noes the
+// scores got wrong. And it can read everything else on the floor (0046): the
+// run_sql tool lets it look up any lead, call, note, callback or list while it
+// writes, read-only, through ai_sql() in the database.
 
 export const API = 'https://generativelanguage.googleapis.com/v1beta'
 
@@ -237,8 +237,9 @@ export const CHAT_SHAPE = `{
  *  turns, the manager's as written and the AI's as the JSON it answered with.
  *  Turns with nothing in them are left out, and two in a row from one side are
  *  joined, so the turns alternate and end with the manager. */
-export function buildChat({ snapshot, history }) {
-  const system = [SYSTEM, '', CHAT_RULES, '', 'Answer in exactly this JSON shape (lessons and lists may be empty):', CHAT_SHAPE,
+export function buildChat({ snapshot, history, guide = null }) {
+  const system = [SYSTEM, '', CHAT_RULES, ...(guide ? ['', guide] : []),
+    '', 'Answer in exactly this JSON shape (lessons and lists may be empty):', CHAT_SHAPE,
     '', 'Floor data:', JSON.stringify(snapshot)].join('\n')
   const contents = []
   for (const m of history ?? []) {
@@ -260,6 +261,47 @@ export function parseChat(text) {
   const reply = str(j.reply, 4000)
   if (!reply) throw new GeminiError('Gemini answered with an empty reply.')
   return { reply, lessons: list(j.lessons, 4).map(cleanLesson).filter(Boolean), lists: lists(j.lists, 4) }
+}
+
+/** A reply that came back as plain text rather than the JSON asked for: still a reply. */
+export function looseChat(text) {
+  const reply = str(text, 4000)
+  if (!reply) throw new GeminiError('Gemini answered with an empty reply.')
+  return { reply, lessons: [], lists: [] }
+}
+
+// ----------------------------------------------------------- reading the floor --
+export const READ_TOOL = { functionDeclarations: [{
+  name: 'run_sql',
+  description: 'Run one read-only PostgreSQL query (a SELECT or WITH) on the dial floor\'s database and get up to 200 rows back as JSON. '
+    + 'Use it to look up anything the floor data does not already show: a lead by name or number, its calls and the agents\' notes, '
+    + 'callbacks, lists, an agent\'s day, the settings.',
+  parameters: {
+    type: 'object',
+    properties: { sql: { type: 'string', description: 'One SELECT or WITH query, with its own ORDER BY and LIMIT.' } },
+    required: ['sql'],
+  },
+}] }
+
+/** What Gemini needs to know to read the floor well: the tool, the meaning of
+ *  the main tables, and the map of every table and column it can read. */
+export function dataGuide(schema) {
+  return [
+    'You can read the whole dial floor database with the run_sql tool: read-only, one query at a time, up to 200 rows each.',
+    'Look things up rather than guess: a lead by name or number, its calls and notes, an agent\'s day, callbacks due, lists,',
+    'why a lead scored as it did. Say what you looked up. When you have what you need, answer in the JSON shape asked for, and only that.',
+    'leads: one business each (name, phone_display; phone_norm is ten digits; addr_city, addr_state; category_key holds its trades,',
+    'comma separated; tier, score, review_count, website_type, source). lead_state, one row per lead: state is queued, resting,',
+    'callback_locked, in_progress, handoff (won), suppressed or provider_list; attempts_total dials, connects_total pickups.',
+    'attempts: one dial each (lead_id, agent_id = profiles.id, and profiles.name is the agent; clicked_at, connected, disposition,',
+    'duration_seconds, note = the agent\'s note, ai_summary = Zoom\'s summary, ai_p_win = the AI\'s chance of a win when dialed).',
+    'A win is disposition chance_website or sale_closed; a conversation is connected and not gatekeeper_end; not_placed was never dialed.',
+    'handoff_ledger holds every win (kind, summary, agent_id, handed_at, and how it turned out). callbacks (lead_id, agent_id, due_at,',
+    'status), lists and list_items, lead_scores (p_win, p_answer, reasons), lead_intents, suppression (do not call), app_settings',
+    '(business_tz is the floor\'s clock; times are stored in UTC).',
+    'Every table and column you can read:',
+    String(schema ?? ''),
+  ].join('\n')
 }
 
 /** How hard the model thinks before it answers. Gemini 3 and later think at
@@ -534,25 +576,131 @@ async function ask({ apiKey, model, prefer, request, parse, fetchFn, timeoutMs, 
   throw new GeminiError(`No Gemini model could answer just now: ${tally}. Ask again in a few minutes.${bad ? ` The last unreadable answer: ${bad}.` : ''}`)
 }
 
-/** Ask Gemini for the floor analysis. Returns { model, brief }; the analysis
- *  says which model wrote it when the first choice could not. */
-export async function generateBrief({ apiKey, model, prefer = null, snapshot, fetchFn = fetch, timeoutMs = 110_000, startMs = 20_000,
-                                      retryMs = 2_000, maxTries = 16 }) {
+// statuses worth one more try in the middle of an exchange
+const RETRYABLE = new Set([429, 500, 503, 504])
+
+/** An answer that may look things up first. Gemini calls run_sql (carried out
+ *  by runTool) as often as it needs, up to maxRounds, then answers; the last
+ *  round it is told to answer with what it has. One model sees the whole
+ *  exchange, since its thinking travels with its calls; a model that is busy
+ *  or slow at the first call is passed over for the next, as in ask(). parse
+ *  reads the answer, loose (if given) one that is not JSON.
+ *  Returns { model, out, reads, skipped }: reads lists every query it ran. */
+async function converse({ apiKey, model, prefer, system, contents, runTool, parse, loose = null, fetchFn, timeoutMs, maxRounds = 6 }) {
+  if (!apiKey) throw new GeminiError('GEMINI_API_KEY is not set.')
+  const deadline = Date.now() + timeoutMs
+  const named = (m) => (m ? (String(m).startsWith('models/') ? String(m) : `models/${m}`) : null)
+  const configured = named(model)
+  let queue = []
+  if (configured) queue = [configured]
+  else {
+    const all = await listModels(apiKey, fetchFn)
+    queue = [...flashModels(all), ...liteModels(all)]
+    if (!queue.length && pickModel(all)) queue = [pickModel(all)]
+  }
+  if (!queue.length) throw new GeminiError('This key can reach no Gemini Flash model. Set one in Settings → AI → model.')
+  const p = named(prefer)
+  if (!configured && p && queue.indexOf(p) > 0) { queue.splice(queue.indexOf(p), 1); queue.unshift(p) }
+
+  const reads = []
+  const once = (n, convo, think, final) => call(fetchFn, `${API}/${n}:generateContent`, apiKey, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] }, contents: convo, tools: [READ_TOOL],
+      toolConfig: { functionCallingConfig: { mode: final ? 'NONE' : 'AUTO' } },
+      generationConfig: { maxOutputTokens: 32768, ...(think && thinkingFor(n) ? { thinkingConfig: thinkingFor(n) } : {}) },
+    }),
+  }, Math.max(1_000, Math.min(60_000, deadline - Date.now())))
+
+  const passed = []
+  for (const n of queue.slice(0, 4)) {
+    if (passed.length && deadline - Date.now() < 10_000) break
+    const who = n.replace('models/', '')
+    const convo = [...contents]
+    let think = true
+    let res
+    try { res = await once(n, convo, think, false) } catch (e) { passed.push(`${who}: ${e.message}`); continue }
+    // a model that does not take this thinking setting is asked again without it
+    if (res.status === 400 && thinkingFor(n)) {
+      const msg = await errorMessage(res)
+      if (!/thinking/i.test(msg)) throw explainStatus(400, msg)
+      think = false
+      res = await once(n, convo, think, false)
+    }
+    if (BUSY[res.status]) { res.body?.cancel().catch(() => {}); passed.push(`${who} ${BUSY[res.status]}`); continue }
+    if (!res.ok) throw await explain(res)
+    // from here this model answers the whole exchange
+    for (let round = 1; ; round++) {
+      const j = await res.json()
+      const cand = j?.candidates?.[0]
+      const parts = cand?.content?.parts ?? []
+      const asked = parts.filter((x) => x?.functionCall)
+      if (!asked.length) {
+        const text = parts.filter((x) => !x?.thought).map((x) => x?.text ?? '').join('')
+        if (!text.trim()) throw new GeminiError(`${who} returned no answer (${cand?.finishReason ?? j?.promptFeedback?.blockReason ?? 'no text'}).`)
+        let out
+        try { out = parse(text) } catch (e) { if (!loose) throw e; out = loose(text) }
+        return { model: who, out, reads, skipped: passed[0] ?? null }
+      }
+      convo.push(cand.content)   // as it came: the calls carry the model's thinking
+      const answers = []
+      for (const c of asked) {
+        const { name, args, id } = c.functionCall
+        const sql = String(args?.sql ?? '')
+        const result = name === 'run_sql' ? await runTool(sql) : { error: `there is no tool called ${name}` }
+        if (name === 'run_sql') reads.push({ sql: sql.slice(0, 2000), rows: result?.count ?? null, error: result?.error ?? null })
+        answers.push({ functionResponse: { ...(id ? { id } : {}), name, response: result } })
+      }
+      convo.push({ role: 'user', parts: answers })
+      const last = round >= maxRounds || deadline - Date.now() < 20_000
+      res = await once(n, convo, think, last)
+      // a busy moment in the middle of the exchange: one more try after a pause
+      if (RETRYABLE.has(res.status)) { res.body?.cancel().catch(() => {}); await sleep(2_000); res = await once(n, convo, think, last) }
+      if (!res.ok) throw await explain(res)
+    }
+  }
+  throw new GeminiError(`No Gemini model could answer just now: ${passed.join('; ') || 'out of time'}. Ask again in a few minutes.`)
+}
+
+/** Ask Gemini for the floor analysis. Returns { model, brief, reads }; the
+ *  analysis says which model wrote it when the first choice could not. With
+ *  runTool it may read the floor first (half the time allowed); if that fails
+ *  for any reason it writes from the snapshot alone, as before. */
+export async function generateBrief({ apiKey, model, prefer = null, snapshot, schema = null, runTool = null, fetchFn = fetch,
+                                      timeoutMs = 110_000, startMs = 20_000, retryMs = 2_000, maxTries = 16 }) {
   const prompt = buildPrompt(snapshot)
-  const r = await ask({ apiKey, model, prefer, fetchFn, timeoutMs, startMs, retryMs, maxTries, parse: parseBrief,
+  const started = Date.now()
+  if (runTool) {
+    try {
+      const r = await converse({ apiKey, model, prefer, fetchFn, runTool, parse: parseBrief, maxRounds: 4, timeoutMs: Math.round(timeoutMs / 2),
+        system: [SYSTEM, '', dataGuide(schema)].join('\n'), contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+      if (r.skipped) r.out.cautions = [`${r.skipped}, so ${r.model} wrote this analysis`, ...r.out.cautions].slice(0, 6)
+      return { model: r.model, brief: r.out, reads: r.reads }
+    } catch (e) {
+      if (e instanceof GeminiError && /API key|GEMINI_API_KEY/.test(e.message)) throw e
+    }
+  }
+  const r = await ask({ apiKey, model, prefer, fetchFn, startMs, retryMs, maxTries, parse: parseBrief,
+    // after a reading attempt, what is left of the time (and never under 30 s)
+    timeoutMs: runTool ? Math.max(30_000, timeoutMs - (Date.now() - started)) : timeoutMs,
     request: (n, think) => JSON.stringify({ systemInstruction: { parts: [{ text: SYSTEM }] },
                                            contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: generation(n, think) }) })
   if (r.skipped) r.out.cautions = [`${r.skipped}, so ${r.model} wrote this analysis`, ...r.out.cautions].slice(0, 6)
-  return { model: r.model, brief: r.out }
+  return { model: r.model, brief: r.out, reads: [] }
 }
 
-/** Gemini's reply to the conversation so far (the manager spoke last).
- *  Returns { model, chat: { reply, lessons, lists } }. */
-export async function generateChat({ apiKey, model, prefer = null, snapshot, history, fetchFn = fetch, timeoutMs = 100_000,
-                                     startMs = 20_000, retryMs = 2_000, maxTries = 12 }) {
-  const { system, contents } = buildChat({ snapshot, history })
+/** Gemini's reply to the conversation so far (the manager spoke last). With
+ *  runTool it reads whatever it needs on the floor first.
+ *  Returns { model, chat: { reply, lessons, lists }, reads }. */
+export async function generateChat({ apiKey, model, prefer = null, snapshot, history, schema = null, runTool = null, fetchFn = fetch,
+                                     timeoutMs = 100_000, startMs = 20_000, retryMs = 2_000, maxTries = 12 }) {
+  const { system, contents } = buildChat({ snapshot, history, guide: runTool ? dataGuide(schema) : null })
   if (!contents.length) throw new GeminiError('There is no message to answer.')
+  if (runTool) {
+    const r = await converse({ apiKey, model, prefer, fetchFn, runTool, system, contents, parse: parseChat, loose: looseChat, timeoutMs })
+    return { model: r.model, chat: r.out, reads: r.reads }
+  }
   const r = await ask({ apiKey, model, prefer, fetchFn, timeoutMs, startMs, retryMs, maxTries, parse: parseChat,
     request: (n, think) => JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents, generationConfig: generation(n, think) }) })
-  return { model: r.model, chat: r.out }
+  return { model: r.model, chat: r.out, reads: [] }
 }

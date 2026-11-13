@@ -80,7 +80,7 @@ export default function AiReview({ changed, openEditor, version }: {
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
         For each one, tell it why: <b>teach from this</b> opens a lesson with the lead's traits filled in (keep the ones that matter),
-        or give the lead your word. Gemini also reads these misses, by traits only, before every analysis and reply.
+        or give the lead your word. Gemini also reads these misses before every analysis and reply, and can look up each one's calls and notes.
       </p>
 
       <div className="card">

@@ -151,7 +151,9 @@ begin
   assert (select sum((b->>'dials')::int) from jsonb_array_elements(r->'calibration') b) = 2, 'only dials scored before they happened';
   r := public.ai_memory();
   assert jsonb_array_length(r->'misses_30d') >= 2, 'Gemini reads the misses';
-  assert r::text not like '%TX Side Fresh%' and r::text not like '%(512)%', 'traits only: no names, no numbers';
+  -- 0046: the misses name their leads, so Gemini can look each one up
+  assert exists (select 1 from jsonb_array_elements(r->'misses_30d') x where x->>'name' = 'TX Side Fresh' and x->>'lead_id' is not null),
+    format('the misses, by name: %s', r->'misses_30d');
 end $$;
 
 \echo '53.6 · Corrections: one per finding, the latest word wins, removable; Gemini reads them with the lessons and verdicts'

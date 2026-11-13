@@ -299,3 +299,51 @@ test('the model that answered last is asked first, and a chat reply comes back',
   assert.equal(sent.contents[0].parts[0].text, 'Are Florida roofers good?')
   await assert.rejects(generateChat({ apiKey: 'k', model: '', snapshot: {}, history: [], fetchFn: f }), /no message/)
 })
+
+// 0046: Gemini reads the floor through run_sql while it answers
+const oneModel = { status: 200, body: { models: [{ name: 'models/gemini-3.8-flash', supportedGenerationMethods: gen }] } }
+const said = (parts) => ({ status: 200, body: { candidates: [{ content: { role: 'model', parts } }] } })
+
+test('it looks things up, gets the rows back, and answers with what it found', async () => {
+  const seen = []
+  const ran = []
+  let turn = 0
+  const f = fakeFetch([[/\/models\?/, oneModel], [/:generateContent$/, () => (++turn === 1
+    ? said([{ functionCall: { name: 'run_sql', args: { sql: "select note from attempts where disposition = 'not_interested_hard' limit 5" } }, thoughtSignature: 'sig-1' }])
+    : said([{ text: '{"reply":"Three of five hard noes say they already have a site.","lessons":[]}' }]))]], seen)
+  const out = await generateChat({ apiKey: 'k', model: '', snapshot: {}, schema: 'attempts(id int8, note text)',
+    history: [{ role: 'manager', text: 'Why are people saying no?' }], fetchFn: f,
+    runTool: async (sql) => { ran.push(sql); return { rows: [{ note: 'has a site' }], count: 1, truncated: false } } })
+  assert.match(out.chat.reply, /already have a site/)
+  assert.equal(ran.length, 1)
+  assert.deepEqual(out.reads, [{ sql: ran[0], rows: 1, error: null }])
+  const first = JSON.parse(seen.find((s) => /:generateContent$/.test(s.url)).init.body)
+  assert.equal(first.tools[0].functionDeclarations[0].name, 'run_sql')
+  assert.match(first.systemInstruction.parts[0].text, /attempts\(id int8, note text\)/, 'the map of the floor is in its instructions')
+  const second = JSON.parse(seen.filter((s) => /:generateContent$/.test(s.url))[1].init.body)
+  assert.equal(second.contents[1].parts[0].thoughtSignature, 'sig-1', 'its own call goes back as it came, thinking and all')
+  assert.deepEqual(second.contents[2].parts[0].functionResponse.response.rows, [{ note: 'has a site' }])
+})
+
+test('a reply in plain words is still a reply, and a model that keeps looking is told to answer', async () => {
+  const seen = []
+  const f = fakeFetch([[/\/models\?/, oneModel], [/:generateContent$/, (url, init) => JSON.parse(init.body).toolConfig.functionCallingConfig.mode === 'NONE'
+    ? said([{ text: 'Mostly roofers in Florida.' }])
+    : said([{ functionCall: { name: 'run_sql', args: { sql: 'select 1' } } }])]], seen)
+  const out = await generateChat({ apiKey: 'k', model: '', snapshot: {}, history: [{ role: 'manager', text: 'Who converts?' }],
+    fetchFn: f, runTool: async () => ({ rows: [], count: 0 }) })
+  assert.equal(out.chat.reply, 'Mostly roofers in Florida.')
+  assert.equal(out.reads.length, 6, 'six lookups, then made to answer')
+})
+
+test('an analysis that cannot be written with lookups is written from the floor data alone', async () => {
+  const seen = []
+  const f = fakeFetch([[/\/models\?/, oneModel],
+    [/:generateContent$/, said([{ text: 'Here are some thoughts in prose, not JSON.' }])],
+    [/:streamGenerateContent/, answer]], seen)
+  const out = await generateBrief({ apiKey: 'k', model: '', snapshot: {}, schema: 'leads(id int8)', fetchFn: f,
+    runTool: async () => ({ rows: [], count: 0 }) })
+  assert.equal(out.brief.headline, 'h')
+  assert.deepEqual(out.reads, [])
+  assert.ok(seen.some((s) => /:streamGenerateContent/.test(s.url)), 'it fell back to the snapshot-only path')
+})

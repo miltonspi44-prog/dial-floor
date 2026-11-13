@@ -374,8 +374,8 @@ export default function AiFloor() {
       </>)}
 
       <p className="muted small">
-        Gemini sees only aggregates (rates, counts and lifts, and each agent's name and record) and what you teach it: your lessons, your
-        corrections, and the traits (never the name, number or notes) of leads you judge or it misjudged.
+        Gemini can read everything on the floor to write its analysis and answer you: the numbers above, every lead, call, note, callback
+        and list, and everything you teach it. It only reads: it changes nothing, and it can't see logins, passwords or keys.
         {d.outside_calls_7d > 0 && ` ${d.outside_calls_7d} calls placed straight from Zoom this week are not in any of this.`}
       </p>
       {seed && <AiLessonEditor seed={seed} onClose={() => setSeed(null)} onSaved={changed} />}

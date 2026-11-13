@@ -7,12 +7,15 @@
 // because the call comes from the database, not a browser.
 //
 // An analysis: the aggregated snapshot (ai_floor_snapshot — rates, counts and
-// lifts only, no lead names, numbers or notes) with what the manager has taught
-// (ai_memory — lessons, verdicts and misses by traits only, and corrections),
-// Gemini's analysis of it, and one row in ai_briefs either way, so the AI page
-// can say what happened. A chat message ({"task": "chat", "thread": n}): the
-// same snapshot and memory, the conversation so far, and Gemini's reply (with
-// any lessons it proposes) as the next row in ai_chat, or why there is none.
+// lifts) with what the manager has taught (ai_memory — lessons, verdicts,
+// corrections and misses), Gemini's analysis of it, and one row in ai_briefs
+// either way, so the AI page can say what happened. A chat message ({"task":
+// "chat", "thread": n}): the same snapshot and memory, the conversation so far,
+// and Gemini's reply (with any lessons it proposes) as the next row in ai_chat,
+// or why there is none. Either way Gemini may read anything else on the floor
+// first (0046): its run_sql calls run here through ai_sql() (read-only, as the
+// ai_reader role, which reaches no login or secret), and each reply keeps the
+// queries it ran.
 // The lead scores it reads are the minute job's: rescoring every lead takes
 // longer than the API's statement timeout allows, so it is not done from here.
 // The model that answered last is asked first next time (app_settings
@@ -45,6 +48,15 @@ function json(body: unknown, status = 200): Response {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A query's rows, cut down until they fit in Gemini's answer budget (about
+// 40,000 characters a lookup), saying so when they were cut.
+function fit(r: { rows: unknown[]; count: number; truncated: boolean }) {
+  let rows = r.rows ?? [];
+  if (JSON.stringify(rows).length <= 40_000) return r;
+  while (rows.length > 1 && JSON.stringify(rows).length > 40_000) rows = rows.slice(0, Math.floor(rows.length * 0.7));
+  return { rows, count: rows.length, truncated: true, note: "cut to fit: ask for fewer columns or rows" };
+}
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ ok: false, why: "POST only" }, 405);
@@ -104,14 +116,23 @@ Deno.serve(async (req) => {
     const remember = (m: string) =>
       supa.from("app_settings").upsert({ key: "ai_last_good", value: { model: m, at: new Date().toISOString() } });
 
+    // what Gemini can read, and the reading itself; without the map it writes from the snapshot alone
+    const { data: schema, error: schemaErr } = await supa.rpc("ai_schema");
+    if (schemaErr) console.error(`floor-ai: no map of the floor, so no reading: ${schemaErr.message}`);
+    const runTool = schemaErr ? null : async (sql: string) => {
+      const { data, error } = await supa.rpc("ai_sql", { p_sql: sql });
+      if (error) return { error: error.message };
+      return fit(data as { rows: unknown[]; count: number; truncated: boolean });
+    };
+
     if (thread != null) {
-      const out = await generateChat({ apiKey, model, prefer, snapshot: floor, history });
-      await reply({ text: out.chat.reply, proposals: { lessons: out.chat.lessons, lists: out.chat.lists }, model: out.model });
+      const out = await generateChat({ apiKey, model, prefer, snapshot: floor, history, schema, runTool });
+      await reply({ text: out.chat.reply, proposals: { lessons: out.chat.lessons, lists: out.chat.lists, reads: out.reads }, model: out.model });
       await remember(out.model);
       return json({ ok: true, model: out.model });
     }
-    const out = await generateBrief({ apiKey, model, prefer, snapshot: floor });
-    await record({ ok: true, model: out.model, brief: out.brief });
+    const out = await generateBrief({ apiKey, model, prefer, snapshot: floor, schema, runTool });
+    await record({ ok: true, model: out.model, brief: { ...out.brief, reads: out.reads } });
     await remember(out.model);
     return json({ ok: true, model: out.model });
   } catch (e) {

@@ -159,8 +159,8 @@ project's public URL and publishable key.
   thin evidence toward the floor average. Each agent's record per conversation
   (a win 1, a callback or email 0.3) is learned the same way, overall and by
   trade and state, and the morning radar proposes each agent the leads they
-  are likeliest to convert (setting `ai.match`). Gemini reads the aggregates,
-  never a lead's name, number or notes, and writes the floor analysis: where
+  are likeliest to convert (setting `ai.match`). Gemini reads the aggregates
+  (and, since 0046, anything else on the floor) and writes the floor analysis: where
   and when to call, who should work what, and lists worth building, each with
   a one-click build. It writes one at 12:35 UTC daily or on demand. It needs
   `GEMINI_API_KEY` in Supabase → Edge Functions → Secrets; the scores and the
@@ -174,12 +174,19 @@ project's public URL and publishable key.
     calls; marks single leads **good** (×2) or **bad** (×¼); marks the analysis's
     findings **right** or **wrong**; and **talks to Gemini**, which answers from
     the floor's numbers, says whether the record agrees, and proposes lessons to
-    save in one click. Gemini reads every lesson, verdict and correction (traits
-    only, never a lead's name or number) before each analysis and reply. Each dial
+    save in one click. Gemini reads every lesson, verdict and correction before
+    each analysis and reply. Each dial
     keeps the score its lead had, so the review lists wins it rated low and hard
     noes it rated high, and how its scores held up. Teaching reaches the scores
     within a minute (a minute job rescores when asked, and hourly regardless). A
     chance given recorded by hand counts as a win on the lead's last dial.
+  - **Reading everything** (0046): while it writes an analysis or answers in the
+    conversation, Gemini can look up anything on the floor (any lead, call,
+    agent's note, Zoom summary, callback, list or setting) with a `run_sql` tool.
+    Each query runs through `ai_sql()` as the `ai_reader` role: SELECT on every
+    table in `public` (and any added later), in a read-only transaction, at most
+    200 rows; it reaches nothing in `auth` (logins), Vault (the cron secret),
+    pg_net or pg_cron. The chat shows the queries behind each reply.
 - **Radar** (managers): the morning run (the scheduler at 13:00 UTC, or the
   first Dial or Radar page of the business day) ranks the pool and *proposes*
   every free agent their best leads as a "Radar" list (`radar_deal_per_agent`,

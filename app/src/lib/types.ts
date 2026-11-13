@@ -609,8 +609,10 @@ export interface AiTeachData {
 }
 export interface AiChatMessage {
   id: number; at: string; role: 'manager' | 'ai'; author: string | null; text: string
-  proposals: { lessons?: AiLessonDraft[]; lists?: AiListIdea[] }; model: string | null; error: string | null
+  proposals: { lessons?: AiLessonDraft[]; lists?: AiListIdea[]; reads?: AiRead[] }; model: string | null; error: string | null
 }
+/** 0046: a query Gemini ran on the floor before it answered. */
+export interface AiRead { sql: string; rows: number | null; error: string | null }
 export interface AiChatThread { thread: number; threads: number; messages: AiChatMessage[]; waiting: boolean }
 export interface AiReviewRow {
   kind: 'underrated' | 'overrated'; lead_id: number; name: string; city: string | null; state: string | null; trade: string

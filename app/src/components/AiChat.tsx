@@ -8,7 +8,7 @@ import type { LessonSeed } from './AiLessonEditor'
 const STARTERS = [
   'Why do you rank Washington remodelers so high?',
   'Concrete contractors in Texas almost never buy from us: most have a nephew who builds websites.',
-  'Which of my lessons does the data disagree with?',
+  'What reasons did agents note on this week\'s hard noes?',
   'What do the wins you rated low have in common?',
 ]
 
@@ -123,6 +123,19 @@ export default function AiChat({ taught, say, onSaved, onEdit, buildIdea }: {
           <div key={m.id} className="bubble ai">
             <div className="who">Gemini{m.model ? ` · ${m.model}` : ''}</div>
             {m.error ? <div className="warnline">It couldn't answer: {m.error}</div> : m.text}
+            {(m.proposals.reads ?? []).length > 0 && (
+              <details className="reads">
+                <summary>It looked at the floor {m.proposals.reads!.length} time{m.proposals.reads!.length === 1 ? '' : 's'}</summary>
+                <ol>
+                  {m.proposals.reads!.map((r, i) => (
+                    <li key={i}>
+                      <code>{r.sql}</code>
+                      <span className="muted"> {r.error ? `· couldn't: ${r.error}` : `· ${r.rows ?? 0} row${r.rows === 1 ? '' : 's'}`}</span>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
             {(m.proposals.lessons ?? []).map((d, i) => (
               <ProposedLesson key={`l${i}`} draft={d} source="chat" taught={taught} onSaved={onSaved} onEdit={onEdit} />
             ))}
@@ -147,7 +160,8 @@ export default function AiChat({ taught, say, onSaved, onEdit, buildIdea }: {
         <button className="btn primary" disabled={sending || waiting || !text.trim()} onClick={send}>{sending ? 'Sending…' : 'Send'}</button>
       </div>
       <div className="muted small">
-        Ctrl+Enter sends. Gemini sees the floor's numbers and everything you've taught it, never a lead's name, number or call notes.
+        Ctrl+Enter sends. Gemini can read everything on the floor to answer you (every lead, call, note, callback and list) but it
+        changes nothing, and it can't see logins, passwords or keys.
       </div>
     </div>
   )
