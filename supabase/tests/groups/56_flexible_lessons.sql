@@ -154,6 +154,44 @@ begin
   perform t.fails($q$select public.ai_lesson_preview('{"dials": "0"}')$q$, 'manager only');
 end $$;
 
+\echo '56.6 · A lesson run as one query (0048) finds exactly the leads and dials the one-lead test does'
+do $$
+declare
+  cond jsonb; q text; n bigint;
+  fast bigint[]; slow bigint[];
+  conds jsonb[] := array[
+    '{"dials": "3+", "pickups": "0"}', '{"dials": "0"}', '{"last_outcome": "none"}', '{"pickups": "1+", "state": "TX"}',
+    '{"last_outcome": "not_interested_soft", "days_since": "<7"}', '{"last_outcome": "no_answer,busy_failed,voicemail"}',
+    '{"rating": "4.5+"}', '{"rating": "<4,5"}', '{"reviews": "0"}', '{"reviews": "1-9,50+"}', '{"score": "<40,70"}',
+    '{"name_has": "llc,paving"}', '{"city": "san antonio,brooklyn"}', '{"intent": "owner_mobile"}', '{"trade": "siding,concrete"}',
+    '{"area": "718", "phone": "mobile", "website": "none", "source": "angi", "tier": "A"}', '{"days_since": "4-10", "dials": ">1"}']::jsonb[];
+begin
+  foreach cond in array conds loop
+    q := public.ai_lesson_where(cond);
+    execute format('select coalesce(array_agg(l.id order by l.id), ''{}'') from public.ai_lead_history() h join leads l on l.id = h.lead_id
+                     where l.source_id between 5601 and 5604 and %s', q) into fast;
+    select coalesce(array_agg(l.id order by l.id), '{}') into slow
+      from public.ai_lead_history() h join leads l on l.id = h.lead_id
+     where l.source_id between 5601 and 5604 and public.ai_lesson_match(cond, l, h.dials, h.pickups, h.last_outcome, h.days, h.intents);
+    assert fast = slow, format('%s: one query found %s, the one-lead test %s', cond, fast, slow);
+    execute format('select coalesce(array_agg(h.attempt_id order by h.attempt_id), ''{}'')
+                      from (select x.attempt_id, a.lead_id, x.dials_before as dials, x.pickups_before as pickups, x.last_before as last_outcome,
+                                   x.days_before as days, array(select li.intent_key from lead_intents li where li.lead_id = a.lead_id) as intents
+                              from public.ai_dial_history(90) x join attempts a on a.id = x.attempt_id) h
+                      join attempts a on a.id = h.attempt_id join leads l on l.id = a.lead_id where %s', q) into fast;
+    select coalesce(array_agg(x.attempt_id order by x.attempt_id), '{}') into slow
+      from public.ai_dial_history(90) x join attempts a on a.id = x.attempt_id join leads l on l.id = a.lead_id
+     where public.ai_lesson_match(cond, l, x.dials_before, x.pickups_before, x.last_before, x.days_before,
+                                  array(select li.intent_key from lead_intents li where li.lead_id = a.lead_id));
+    assert fast = slow, format('%s, on the dials: one query found %s, the one-lead test %s', cond, fast, slow);
+  end loop;
+  -- nothing a lesson holds becomes SQL of its own, even past the tidying
+  q := public.ai_lesson_where('{"city": "x''); delete from leads; --", "name_has": "a'') or true or (''", "dials": "1); delete from leads; --"}');
+  execute format('select count(*) from public.ai_lead_history() h join leads l on l.id = h.lead_id where %s', q) into n;
+  assert n = 0 and exists (select 1 from leads), format('quoted as values, matching nothing: %s', q);
+  perform t.fails($q$select public.ai_lesson_where('{"zodiac": "leo"}')$q$, 'cannot use the trait');
+end $$;
+
 -- clean up
 select t.reset() \g /dev/null
 do $$ begin
