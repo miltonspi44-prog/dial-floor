@@ -255,13 +255,28 @@ test('an unreadable answer passes to the next model, and the error shows what ca
 })
 
 test('a lesson Gemini proposes is checked like the database checks it, or dropped', () => {
-  assert.deepEqual(cleanLesson({ traits: { trade: 'Roofing, siding', state: ['fl', 'ga'], area: 305, city: 'Miami' }, effect: 'more', pickup: 'same', why: 'storms' }),
-    { conditions: { trade: 'roofing,siding', state: 'FL,GA', area: '305' }, effect: 'more', pickup: null, why: 'storms' })
+  assert.deepEqual(cleanLesson({ traits: { trade: 'Roofing, siding', state: ['fl', 'ga'], area: 305, city: 'Miami', zodiac: 'leo' }, effect: 'more', pickup: 'same', why: 'storms' }),
+    { conditions: { trade: 'roofing,siding', state: 'FL,GA', city: 'miami', area: '305' }, effect: 'more', pickup: null, why: 'storms' })
   assert.equal(cleanLesson({ traits: { state: 'Florida' }, effect: 'more' }), null, 'no valid trait')
   assert.equal(cleanLesson({ traits: { state: 'FL' }, effect: 'hugely' }), null, 'no known effect')
   assert.deepEqual(cleanLesson({ traits: { phone: 'landline' }, pickup: 'less' })?.pickup, 'less', 'a pickup lesson alone is fine')
   const b = parseBrief('{"headline":"h","summary":"s","lessons":[{"traits":{"state":"WA"},"effect":"more","why":"w"},{"traits":{},"effect":"more"}]}')
   assert.equal(b.lessons.length, 1, 'the analysis carries its lessons, the empty one dropped')
+})
+
+test('a lesson can name the calls so far, any number range and more of the business, as the database keeps them', () => {
+  const c = (traits) => cleanLesson({ traits, effect: 'less', why: 'w' })?.conditions ?? null
+  assert.deepEqual(c({ attempts: '>= 3', connects: 0, last_disposition: 'No_Answer, voicemail', days_since: '3 to 7' }),
+    { dials: '3+', pickups: '0', last_outcome: 'no_answer,voicemail', days_since: '3-7' }, 'the call traits, by any name a model uses')
+  assert.deepEqual(c({ rating: '<= 4.5', reviews: '1-9, 50+', score: '<40', name_has: ' LLC ', city: ' San  Antonio ', intent: 'Owner_Mobile' }),
+    { reviews: '1-9,50+', rating: '0-4.5', score: '<40', name_has: 'llc', city: 'san antonio', intent: 'owner_mobile' }, 'ranges, words, signals')
+  assert.deepEqual(c({ dials: ['0', '5+'], pickups: 'lots' }), { dials: '0,5+' }, 'a bad value drops its trait, not the lesson')
+  assert.equal(c({ dials: '5-2' }), null, 'a range that runs backwards is no range')
+  assert.equal(c({ dials: '2.5' }), null, 'times called is a whole number')
+  assert.equal(c({ last_outcome: 'hung_up' }), null, 'an outcome the dialer never logs')
+  assert.equal(c({ trade: 'a', state: 'NY', area: '718', phone: 'mobile', website: 'none', source: 'angi', tier: 'A', dials: '3+', pickups: '0' }),
+    null, 'at most 8 traits')
+  assert.deepEqual(cleanRules({ tries: '3+, 2', state: 'ny' }), { state: 'NY', tries: '3+,2' }, 'a list idea can pick leads by their unanswered tries')
 })
 
 test("the conversation alternates, ends with the manager, and carries the AI's own JSON back", () => {

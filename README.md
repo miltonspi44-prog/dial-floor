@@ -187,6 +187,15 @@ project's public URL and publishable key.
     table in `public` (and any added later), in a read-only transaction, at most
     200 rows; it reaches nothing in `auth` (logins), Vault (the cron secret),
     pg_net or pg_cron. The chat shows the queries behind each reply.
+  - **Flexible lessons** (0047): besides the business (trade, state, city, area
+    code, source, website, phone, tier, reviews, Google rating, scraper score,
+    words in its name, its signals), a lesson can name the lead's **calls so
+    far**: times called (`dials`), times picked up (`pickups`), how the last call
+    ended (`last_outcome`, or `none`) and days since it (`days_since`). Every
+    number takes any range (`3`, `2-4`, `3+`, `<3`, `>3`, several with commas),
+    up to 8 traits a lesson. A lead's score counts its calls so far; a lesson's
+    90-day record judges each dial by the lead's history before it. The editor
+    shows how many leads a lesson fits, and how such dials did, before it's saved.
 - **Radar** (managers): the morning run (the scheduler at 13:00 UTC, or the
   first Dial or Radar page of the business day) ranks the pool and *proposes*
   every free agent their best leads as a "Radar" list (`radar_deal_per_agent`,

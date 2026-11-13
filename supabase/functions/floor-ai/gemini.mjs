@@ -43,14 +43,33 @@ export const SYSTEM = [
   'strong recommendations to many weak ones. Answer with JSON only, no prose around it.',
 ].join('\n')
 
+// The traits a lesson can name (0044, and 0047's calls so far, ranges and more
+// of the business), as Gemini is shown them
+export const LESSON_TRAITS = '{"trade": "trade keys, comma separated", "state": "two-letter codes, comma separated", '
+  + '"city": "city names, comma separated", "area": "305 or 305,786", '
+  + '"source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website": "none|social|site", '
+  + '"phone": "mobile|landline|voip", "tier": "A|B|C", "reviews": "a number range", "rating": "Google stars, a number range", '
+  + '"score": "scraper score, a number range", "name_has": "words in the business name, comma separated", '
+  + '"intent": "lead signal keys (intents_catalog), comma separated", "dials": "times called so far, a number range", '
+  + '"pickups": "times picked up so far, a number range", '
+  + '"last_outcome": "how the last call ended: none (never called) or disposition keys, comma separated", '
+  + '"days_since": "days since the last call, a number range"}'
+
+export const TRAIT_NOTE = [
+  'A lesson names 1 to 8 traits; a lead must have all of them, each matching any of its values. A number trait takes a',
+  'range: 3 (exactly), 2-4, 3+ (at least), <3 (under), >3 (over), or several joined by commas. The call traits are the',
+  'lead\'s calls so far: "called 3 or more times and never picked up" is {"dials": "3+", "pickups": "0"}; "a soft no in',
+  'the last week" is {"last_outcome": "not_interested_soft", "days_since": "<7"}; "never called" is {"dials": "0"}.',
+].join('\n')
+
 export const SHAPE = `{
   "headline": "one sentence: the single most useful thing to know today",
   "summary": "3 to 5 sentences on how the floor is doing and why",
   "findings": [{"title": "short", "detail": "what the data shows", "evidence": "the numbers behind it"}],
   "where_to_call": [{"segment": "e.g. remodelers in WA with no website", "when": "best hours on their clock, or 'any time'", "why": "evidence"}],
   "agent_matching": [{"agent": "an agent's name from the data", "focus": "what they should be given", "why": "evidence"}],
-  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two letters", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "min_score": 0}, "why": "evidence"}],
-  "lessons": [{"traits": {"trade": "trade keys, comma separated", "state": "two-letter codes, comma separated", "area": "305 or 305,786", "source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website": "none|social|site", "phone": "mobile|landline|voip", "tier": "A|B|C", "reviews": "0|1-9|10-49|50+", "score": "<40|40-59|60-79|80+"}, "effect": "much_more|more|less|much_less|never", "pickup": "more|less|same", "why": "the reason, and what the data says"}],
+  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two letters", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "tries": "0|1|2|3+: dials so far with no pickup, comma separated", "min_score": 0}, "why": "evidence"}],
+  "lessons": [{"traits": ${LESSON_TRAITS}, "effect": "much_more|more|less|much_less|never", "pickup": "more|less|same", "why": "the reason, and what the data says"}],
   "cautions": ["anything the manager should not over-read"]
 }`
 
@@ -61,6 +80,7 @@ export function buildPrompt(snapshot) {
     'built only from the rule keys shown, each list worth at least 50 dialable leads judging by the pool, and 0 to 3',
     'lessons the scores should be taught, only where the data or the misses strongly support one not already taught):',
     SHAPE,
+    TRAIT_NOTE,
     '',
     'Floor data:',
     JSON.stringify(snapshot),
@@ -104,6 +124,7 @@ const RULES = {
   phone_type: (v) => ['mobile', 'landline', 'voip', 'unknown'].includes(String(v)) ? String(v) : null,
   min_score: (v) => { const n = Number(v); return Number.isInteger(n) && n > 0 && n <= 100 ? n : null },
   intent: (v) => /^[a-z_]+$/.test(String(v)) ? String(v) : null,
+  tries: (v) => { const s = String(v).replace(/\s/g, ''); return /^(0|1|2|3\+)(,(0|1|2|3\+))*$/.test(s) ? s : null },
 }
 
 /** Only the rules build_list understands, each in the form it accepts. */
@@ -128,26 +149,54 @@ const listOf = (norm, ok) => (v) => {
 }
 const lower = (x) => x.toLowerCase().replace(/\s/g, '')
 const upper = (x) => x.toUpperCase().replace(/\s/g, '')
+const words = (x) => x.toLowerCase().replace(/\s+/g, ' ').trim()
 const oneOf = (...xs) => (x) => xs.includes(x)
+// a number range, as the database keeps it: 3 · 2-4 · 3+ · <3 · >3 (">= 3" is 3+, "<= 2" is 0-2, "3 to 5" is 3-5)
+const rangeOf = (n) => {
+  const re = new RegExp(`^(?:${n}|${n}\\+|<${n}|>${n}|${n}-${n})$`)
+  return listOf(
+    (x) => x.toLowerCase().replace(/\s/g, '').replace(/^(?:>=|=>)(.+)$/, '$1+').replace(/^(?:<=|=<)(.+)$/, '0-$1')
+      .replace(/^(.+?)(?:to|–|—)(.+)$/, '$1-$2').replace(/^(.+?)(?:ormore|orabove|andup|andabove|plus)$/, '$1+'),
+    (x) => re.test(x) && !(/^[\d.]+-[\d.]+$/.test(x) && Number(x.split('-')[0]) > Number(x.split('-')[1])))
+}
+const WHOLE = '\\d+'
+export const OUTCOMES = ['none', 'no_answer', 'voicemail', 'busy_failed', 'disconnected', 'wrong_number', 'gatekeeper_end',
+  'not_interested_soft', 'not_interested_hard', 'has_provider', 'dm_not_in', 'callback', 'email_requested', 'dnc',
+  'chance_website', 'sale_closed', 'language_barrier']
 const TRAITS = {
   trade: listOf(lower, (x) => /^[a-z0-9_]+$/.test(x)),
   state: listOf(upper, (x) => /^[A-Z]{2}$/.test(x)),
+  city: listOf(words, (x) => /^[a-z][a-z .'-]{0,39}$/.test(x)),
   area: listOf((x) => x, (x) => /^[2-9]\d{2}$/.test(x)),
   phone: listOf(lower, oneOf('mobile', 'landline', 'voip', 'unknown')),
   website: listOf(lower, oneOf('none', 'social', 'site', 'unreachable', 'unknown')),
   source: listOf(lower, (x) => /^[a-z0-9_]+$/.test(x)),
   tier: listOf(upper, (x) => /^[A-Z]$/.test(x)),
-  reviews: listOf((x) => x, oneOf('0', '1-9', '10-49', '50+')),
-  score: listOf((x) => x, oneOf('<40', '40-59', '60-79', '80+')),
+  reviews: rangeOf(WHOLE),
+  rating: rangeOf('\\d+(?:\\.\\d+)?'),
+  score: rangeOf(WHOLE),
+  name_has: listOf(words, (x) => /^[a-z0-9&' .-]{2,40}$/.test(x)),
+  intent: listOf(lower, (x) => /^[a-z_]+$/.test(x)),
+  dials: rangeOf(WHOLE),
+  pickups: rangeOf(WHOLE),
+  last_outcome: listOf(lower, oneOf(...OUTCOMES)),
+  days_since: rangeOf(WHOLE),
 }
+// what a model may call a trait instead
+const ALIAS = { attempts: 'dials', calls: 'dials', connects: 'pickups', last_disposition: 'last_outcome' }
 
 /** A lesson's traits, in the form the database checks them (ai_clean_conditions). */
 export function cleanConditions(c) {
   const out = {}
   if (!c || typeof c !== 'object' || Array.isArray(c)) return out
+  const given = {}
+  for (const [key, v] of Object.entries(c)) {
+    const k = ALIAS[key.trim().toLowerCase()] ?? key.trim().toLowerCase()
+    if (!(k in given)) given[k] = v
+  }
   for (const [k, check] of Object.entries(TRAITS)) {
-    if (c[k] == null || c[k] === '') continue
-    const v = check(c[k])
+    if (given[k] == null || given[k] === '') continue
+    const v = check(given[k])
     if (v != null) out[k] = v
   }
   return out
@@ -156,7 +205,7 @@ export function cleanConditions(c) {
 /** A lesson Gemini proposes, or null when it names no trait or no effect. */
 export function cleanLesson(x) {
   const conditions = cleanConditions(x?.traits ?? x?.conditions)
-  if (!Object.keys(conditions).length || Object.keys(conditions).length > 6) return null
+  if (!Object.keys(conditions).length || Object.keys(conditions).length > 8) return null
   const effect = Object.hasOwn(EFFECTS, x?.effect) ? x.effect : null
   const pickup = Object.hasOwn(PICKUPS, x?.pickup) ? x.pickup : null
   if (!effect && !pickup) return null
@@ -223,14 +272,15 @@ export const CHAT_RULES = [
   'lesson already in taught.lessons; say it is already taught, and whether its record supports it. Propose a lesson',
   'of your own only when the data strongly supports it. On the chance of a win: much_more ×2, more ×1.5,',
   'less ×0.67, much_less ×0.4, never ×0.1; on a pickup: more ×1.3, less ×0.75, same ×1.',
+  TRAIT_NOTE,
   'A list in "lists" uses only the list rule keys shown, and is built with one click.',
   'Keep the reply short and plain: a few sentences, numbers where they help, no headings or markdown.',
 ].join('\n')
 
 export const CHAT_SHAPE = `{
   "reply": "your answer to the manager",
-  "lessons": [{"traits": {"trade": "trade keys, comma separated", "state": "two-letter codes, comma separated", "area": "305 or 305,786", "source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website": "none|social|site", "phone": "mobile|landline|voip", "tier": "A|B|C", "reviews": "0|1-9|10-49|50+", "score": "<40|40-59|60-79|80+"}, "effect": "much_more|more|less|much_less|never", "pickup": "more|less|same", "why": "the reason, and what the data says"}],
-  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two letters", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "min_score": 0}, "why": "evidence"}]
+  "lessons": [{"traits": ${LESSON_TRAITS}, "effect": "much_more|more|less|much_less|never", "pickup": "more|less|same", "why": "the reason, and what the data says"}],
+  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two letters", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "tries": "0|1|2|3+: dials so far with no pickup, comma separated", "min_score": 0}, "why": "evidence"}]
 }`
 
 /** The conversation as Gemini takes it: the floor in the instructions, then the
@@ -297,7 +347,8 @@ export function dataGuide(schema) {
     'duration_seconds, note = the agent\'s note, ai_summary = Zoom\'s summary, ai_p_win = the AI\'s chance of a win when dialed).',
     'A win is disposition chance_website or sale_closed; a conversation is connected and not gatekeeper_end; not_placed was never dialed.',
     'handoff_ledger holds every win (kind, summary, agent_id, handed_at, and how it turned out). callbacks (lead_id, agent_id, due_at,',
-    'status), lists and list_items, lead_scores (p_win, p_answer, reasons), lead_intents, suppression (do not call), app_settings',
+    'status), lists and list_items, lead_scores (p_win, p_answer, reasons), lead_intents (a lead\'s signals; intents_catalog labels',
+    'each key), ai_lessons (what the manager taught: conditions, win_mult, answer_mult, note), suppression (do not call), app_settings',
     '(business_tz is the floor\'s clock; times are stored in UTC).',
     'Every table and column you can read:',
     String(schema ?? ''),

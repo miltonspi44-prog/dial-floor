@@ -31,7 +31,7 @@ begin
   perform t.as_user('M');
   r := public.ai_lesson_save(null, '{"trade": " Roofing, siding ", "state": "fl"}', 2, 1, 'Storm season: Florida roofers buy');
   assert r->'conditions' = '{"state": "FL", "trade": "roofing,siding"}'::jsonb, format('tidied: %s', r->'conditions');
-  perform t.fails($q$select public.ai_lesson_save(null, '{"city": "Miami"}', 2, 1, 'why not')$q$, 'cannot use the trait');
+  perform t.fails($q$select public.ai_lesson_save(null, '{"zodiac": "leo"}', 2, 1, 'why not')$q$, 'cannot use the trait');
   perform t.fails($q$select public.ai_lesson_save(null, '{"state": "Florida"}', 2, 1, 'why not')$q$, 'is not a state');
   perform t.fails($q$select public.ai_lesson_save(null, '{}', 2, 1, 'why not')$q$, 'at least one trait');
   perform t.fails($q$select public.ai_lesson_save(null, '{"state": "FL"}', 2, 1, 'no')$q$, 'say why');

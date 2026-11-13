@@ -571,6 +571,13 @@ table.data tr.thin .minibar i { opacity: 0.45; }
 .lessonform .traitpick { margin-top: 8px; font-size: 13.5px; }
 .lessonform textarea { width: 100%; font-size: 14px; line-height: 1.5; resize: vertical; }
 .lessonform .lessonpreview { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--chip); font-size: 13.5px; }
+/* 0047: a quick pick for a number range, and what the lesson fits before it is saved */
+.lessonform .choice.pick { border-style: dashed; color: var(--muted); }
+.lessonform .choice.pick:hover { color: var(--accent); border-color: var(--accent); }
+.lessonform .traitgroup { margin: 10px 0 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.lessonform .lessonfits { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.lessonform .lessonfits b { color: var(--ink); }
+.lessonform .lessonfits.none b { color: var(--warn); }
 @media (max-width: 640px) {
   .lessonform .traitname { width: 100%; }
   .aichat .chatinput { flex-direction: column; align-items: stretch; }
