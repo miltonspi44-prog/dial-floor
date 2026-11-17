@@ -53,3 +53,25 @@ test('numbers as strings and timestamps in another shape are the same value', ()
   const next = mapLead(row({ rating: '4.60', review_count: '31', created_at: '2026-10-01T12:00:00Z' }))
   assert.equal(sameRowExactly(next, onFile()), true)
 })
+
+test('0049: a registry lead waits until the scraper has had it the hold; every other source comes in now', async () => {
+  const { holdUntil } = await import('../lib/map.mjs')
+  const now = Date.UTC(2026, 10, 17, 12, 0, 0)
+  const day = 86_400_000
+  const row = (source, first_seen, over = {}) => ({ id: 1, source, first_seen, ...over })
+  // scraped 3 days ago: waits until day 14, read as UTC like every console stamp
+  assert.equal(holdUntil(row('registry', '2026-11-14 12:00:00'), 14, now), Date.UTC(2026, 10, 28, 12, 0, 0))
+  assert.equal(holdUntil(row('Registry ', '2026-11-14T12:00:00Z'), 14, now), Date.UTC(2026, 10, 28, 12, 0, 0), 'any case, any stamp shape')
+  // old enough, to the minute and past it
+  assert.equal(holdUntil(row('registry', '2026-11-03 12:00:00'), 14, now), null, 'exactly 14 days: it comes in')
+  assert.equal(holdUntil(row('registry', '2026-10-01 08:00:00'), 14, now), null)
+  // other sources never wait, however new
+  for (const s of ['yelp', 'angi', 'gmaps', 'thumbtack', 'facebook', null]) {
+    assert.equal(holdUntil(row(s, '2026-11-17 11:59:00'), 14, now), null, `${s} comes in now`)
+  }
+  // no first_seen: created_at stands in, as mapLead reads it
+  assert.equal(holdUntil(row('registry', null, { created_at: '2026-11-16 12:00:00' }), 14, now), now + 13 * day)
+  assert.equal(holdUntil(row('registry', ''), 14, now), null, 'no date at all: its age is unknown, so it comes in rather than waiting for ever')
+  assert.equal(holdUntil(row('registry', '2026-11-16 12:00:00'), 0, now), null, 'a hold of 0 is off')
+  assert.equal(holdUntil(row('registry', '2026-11-16 12:00:00'), 3, now), now + 2 * day, 'the hold is the setting, not a fixed 14')
+})

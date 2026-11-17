@@ -16,6 +16,15 @@ step. It does two jobs, on two clocks:
   else again, and then goes back over the leads we already hold to pick up anything
   the console has changed about them: a corrected phone number, a lead marked
   do-not-call or wrong-number, a lead that is no longer there.
+  **Registry leads wait** (migration 0049): a lead from a state business registry
+  comes in only once the scraper has had it for two weeks. Until then the pull
+  leaves it alone, so it is not marked contacted and the console keeps offering
+  it, and the first pull after its day takes it like any other lead. Every other
+  source comes in as soon as it is scraped. The two weeks is the setting
+  "Registry leads held after scraping" (Settings → Lead sync; 0 turns it off), and
+  each pull's detail says how many are waiting and when the next comes in. While a
+  registry lead waits, the console still counts it as dialable, so an export made
+  from the console in that time can include it.
 - **Push** (every minute) — sends the outcome of calls back to the console
   (do-not-call, sold, not interested, wrong number, callback, long term).
 

@@ -260,7 +260,10 @@ project's public URL and publishable key.
     recent calls or the Handoffs ledger.
 - The sync loop (`cd sync && npm run loop`) keeps leads flowing in and statuses
   flowing back. Run it on any always-on PC (Task Scheduler recipe in the
-  console's own DEPLOY.md works the same here).
+  console's own DEPLOY.md works the same here). Registry leads wait in the
+  console until the scraper has had them two weeks (0049; Settings → Lead sync →
+  "Registry leads held after scraping", 0 = off); every other source comes in
+  as soon as it is scraped.
 
 ## Settings
 

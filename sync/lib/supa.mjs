@@ -16,6 +16,23 @@ export const supa = new Proxy({}, {
   },
 })
 
+// How many days a new registry lead waits in the console after the scraper finds
+// it (0049's pull_hold_registry_days). 14 when nobody has set it, the same default
+// the settings registry shows on the Settings page.
+export const REGISTRY_HOLD_DEFAULT = 14
+
+/** The registry hold, in days. A failed read is not a reason to stop pulling every
+ *  other source: it falls back to the default and says so. */
+export async function registryHoldDays() {
+  const { data, error } = await supa.from('app_settings').select('value').eq('key', 'pull_hold_registry_days').maybeSingle()
+  if (error) {
+    console.error(`  could not read the registry hold (${error.message}); holding ${REGISTRY_HOLD_DEFAULT} days`)
+    return REGISTRY_HOLD_DEFAULT
+  }
+  const n = Number(data?.value)
+  return data?.value != null && Number.isFinite(n) && n >= 0 ? n : REGISTRY_HOLD_DEFAULT
+}
+
 // refresh_lead() is one round trip per lead, so a full import pays it thousands of
 // times. Each call is its own transaction over one lead's own rows, so a handful
 // at a time is safe and finishes in a fraction of the wall clock.

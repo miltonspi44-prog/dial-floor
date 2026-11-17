@@ -88,3 +88,23 @@ test('a quiet quarter hour writes nothing at all', async () => {
   assert.equal(r.changed, 0)
   assert.deepEqual(log.rpcs, [])
 })
+
+test('0049: the registry hold is the setting when there is one, 14 days when not, and never stops a pull', async () => {
+  const { registryHoldDays } = await import('../lib/supa.mjs')
+  const log = { rpcs: [] }
+  const cases = [
+    [{ data: { value: 21 }, error: null }, 21, 'set to 21'],
+    [{ data: { value: 0 }, error: null }, 0, 'switched off'],
+    [{ data: null, error: null }, 14, 'nobody has set it'],
+    [{ data: { value: 'soon' }, error: null }, 14, 'nonsense in the row'],
+    [{ data: { value: -3 }, error: null }, 14, 'a negative hold'],
+    [{ data: null, error: { message: 'connection reset' } }, 14, 'the read failed'],
+  ]
+  for (const [answer, want, why] of cases) {
+    let asked = null
+    initSupa(fakeClient((q) => { asked = q; return answer }, log))
+    assert.equal(await registryHoldDays(), want, why)
+    assert.equal(asked.table, 'app_settings')
+    assert.deepEqual(asked.calls.find(([m]) => m === 'eq')?.[1], ['key', 'pull_hold_registry_days'])
+  }
+})

@@ -1,10 +1,14 @@
 // Pull dialable leads from the hosted console into the dialing DB.
 // Every NEWLY imported lead is marked `contacted` in the console, so the
 // scraper's permanent suppression stops it from ever re-exporting elsewhere.
+// A registry lead waits in the console until the scraper has had it for the
+// registry hold (0049, 14 days unless changed in Settings); every other source
+// comes in as soon as it is scraped.
 import { ensureAuth, dialableLeads, allLeads, markContacted } from './console.mjs'
 import {
-  supa, upsertLeads, heldSourceIds, statesOf, suppressLead, leadIdsBySourceId, logRun,
+  supa, upsertLeads, heldSourceIds, statesOf, suppressLead, leadIdsBySourceId, logRun, registryHoldDays,
 } from './supa.mjs'
+import { holdUntil } from './map.mjs'
 
 // How many console rows go into one upsert. Small enough that the "which of these
 // do we already have" lookup stays a short URL, big enough to not be chatty.
@@ -24,15 +28,33 @@ const MARK_PASSES_MAX = 200
 
 export async function pull() {
   await ensureAuth()
+  const holdDays = await registryHoldDays()
+  const now = Date.now()
   let news = 0
   const pulled = new Set()
   const unusable = []
+  // When each registry lead left in the console may come in. Leaving it alone is
+  // the whole of the hold: it is not marked contacted, so the console keeps
+  // offering it, and the first pull after its day takes it like any other lead.
+  const waiting = []
   for await (const page of dialableLeads()) {
-    const r = await upsertLeads(page, { markPending: true })
+    const ready = []
+    for (const row of page) {
+      const due = holdUntil(row, holdDays, now)
+      if (due == null) ready.push(row)
+      else waiting.push(due)
+    }
+    const left = page.length - ready.length
+    if (!ready.length) {
+      console.log(`  looked at ${page.length}: every one a registry lead still in its ${holdDays}-day hold`)
+      continue
+    }
+    const r = await upsertLeads(ready, { markPending: true })
     news += r.changed
     unusable.push(...r.unusable)
     for (const id of r.ids.keys()) pulled.add(id)
-    console.log(`  looked at ${r.looked} (new: ${r.imported.length}, changed: ${r.changed}, written: ${r.upserted})`)
+    console.log(`  looked at ${r.looked} (new: ${r.imported.length}, changed: ${r.changed}, written: ${r.upserted})`
+      + (left ? `; ${left} registry lead(s) left in the console for now` : ''))
   }
   // Before looking at what the console says about older leads, finish telling it
   // about these ones: that mark is what stops the scraper exporting them again.
@@ -41,6 +63,7 @@ export async function pull() {
 
   const back = await refreshImported(pulled)
   const notes = []
+  if (waiting.length) notes.push(holdNote(waiting, holdDays))
   if (unusable.length) notes.push(unusableNote(unusable, 'offered'))
   if (markNote) notes.push(markNote)
   if (back.detail) notes.push(back.detail)
@@ -74,6 +97,15 @@ export async function flushContacted() {
     if (upErr) throw upErr
     n += ids.length
   }
+}
+
+/** The registry leads left in the console this time, and when the first of them
+ *  comes in: a pull that brought in fewer leads than the console shows should
+ *  say why. */
+export function holdNote(dues, days) {
+  const next = new Date(Math.min(...dues)).toISOString().slice(0, 16).replace('T', ' ')
+  return `${dues.length} registry lead(s) wait in the console until the scraper has had them ${days} days`
+    + ` (Settings: "Registry leads held after scraping"); the next comes in after ${next} UTC.`
 }
 
 /** The console rows nobody could dial, named so the owner can go and fix them.

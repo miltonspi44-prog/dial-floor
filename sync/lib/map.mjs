@@ -174,6 +174,21 @@ function same(a, b) {
   return String(a) === String(b)
 }
 
+/** When a registry lead the console offers may come into the dialer: `days` after
+ *  the scraper first found it (0049, the setting "Registry leads held after
+ *  scraping"). Returns that moment while it is still ahead of `now`, and null for
+ *  a lead that may come in now — any other source, a registry lead old enough, a
+ *  hold of 0, or a row with no date on it at all (its age is unknown, so it comes
+ *  in as every lead used to rather than waiting for ever). */
+export function holdUntil(row, days, now = Date.now()) {
+  if (!(Number(days) > 0)) return null
+  if (String(blank(row?.source) ?? '').toLowerCase() !== 'registry') return null
+  const seen = instant(blank(row.first_seen) ?? blank(row.created_at))
+  if (seen == null) return null
+  const due = seen + Number(days) * 86_400_000
+  return due > now ? due : null
+}
+
 /** Fill a mapped row's blanks from the lead we already hold, in place.
  *  The console having nothing to say about a field is not a reason to throw away
  *  what is in that field — an email an agent captured on a call lives in one, and
