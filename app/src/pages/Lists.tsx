@@ -35,7 +35,6 @@ function tally(c: { count: number }[] | null): number {
   return c?.[0]?.count ?? 0
 }
 
-const STATES = ['', 'FL','GA','NC','SC','TN','VA','PA','OH','NY','NJ','MA','MD','CT','AL','KY','NH','ME','RI','DE','TX','WI','IL','IN','MI','AZ','CA','WA']
 const INTENTS = ['', 'no_website','social_only','free_subdomain','cheap_builder','broken_site','fresh_listing','review_rich','owner_mobile','never_answers','seasonal_window']
 // 0045: the "tries" rule, as build_list and builder_counts take it
 const TRIES = [
@@ -102,8 +101,11 @@ export default function Lists() {
   // (tier first, then state and area code, then each other), and how many leads
   // the rules match in all. A list takes any of the trades picked, and any of
   // the sources picked.
+  // 0050: and every state the pool has leads in, counted under the other rules,
+  // so the State menu matches what the scraper has rather than a fixed list.
   const [counts, setCounts] = useState<{
-    trades: { key: string; n: number }[]; sources: { key: string; n: number }[]; tries?: { key: string; n: number }[]; total: number
+    trades: { key: string; n: number }[]; sources: { key: string; n: number }[]; tries?: { key: string; n: number }[]
+    states?: { key: string; n: number }[]; total: number
   } | null>(null)
   const [pickedTrades, setPickedTrades] = useState<string[]>([])
   const [pickedSources, setPickedSources] = useState<string[]>([])
@@ -358,8 +360,14 @@ export default function Lists() {
           <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
             <option value="">any</option><option>A</option><option>B</option><option>C</option>
           </select></label>
-          <label>State<select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })}>
-            {STATES.map((s) => <option key={s} value={s}>{s || 'any'}</option>)}
+          <label>State<select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })}
+            title="Every state with leads in the pool, counted under the other rules picked">
+            <option value="">any</option>
+            {/* the state picked stays on offer even when the other rules leave it no leads */}
+            {form.state && !(counts?.states ?? []).some((s) => s.key === form.state) && (
+              <option value={form.state}>{form.state} (0)</option>
+            )}
+            {(counts?.states ?? []).map((s) => <option key={s.key} value={s.key}>{s.key} ({s.n.toLocaleString()})</option>)}
           </select></label>
           <label>Area code<input style={{ width: 120 }} value={form.areaCode} onChange={(e) => setForm({ ...form, areaCode: e.target.value })}
             placeholder="305 or 305,786" inputMode="numeric" title="The first three digits of the number; several separated by commas" /></label>
