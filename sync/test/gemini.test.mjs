@@ -277,6 +277,8 @@ test('a lesson can name the calls so far, any number range and more of the busin
   assert.equal(c({ trade: 'a', state: 'NY', area: '718', phone: 'mobile', website: 'none', source: 'angi', tier: 'A', dials: '3+', pickups: '0' }),
     null, 'at most 8 traits')
   assert.deepEqual(cleanRules({ tries: '3+, 2', state: 'ny' }), { state: 'NY', tries: '3+,2' }, 'a list idea can pick leads by their unanswered tries')
+  assert.deepEqual(cleanRules({ state: 'ca, wa' }), { state: 'CA,WA' }, '0051: a list idea can mix states')
+  assert.deepEqual(cleanRules({ state: 'California' }), {}, 'a state name is not a code')
 })
 
 test("the conversation alternates, ends with the manager, and carries the AI's own JSON back", () => {

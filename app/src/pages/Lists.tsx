@@ -96,7 +96,7 @@ export default function Lists() {
   const [itemsErr, setItemsErr] = useState<string | null>(null)
   const [addQ, setAddQ] = useState('')
   const [addHits, setAddHits] = useState<{ id: number; name: string; phone_display: string | null; addr_city: string | null; addr_state: string | null }[]>([])
-  const [form, setForm] = useState({ name: '', agent: '', state: '', areaCode: '', tier: '', tries: '', intent: '', minScore: '', mobileFirst: false, aiOrder: true, limit: '200' })
+  const [form, setForm] = useState({ name: '', agent: '', areaCode: '', tier: '', tries: '', intent: '', minScore: '', mobileFirst: false, aiOrder: true, limit: '200' })
   // 0041: the trades and sources on offer, counted under the rules picked so far
   // (tier first, then state and area code, then each other), and how many leads
   // the rules match in all. A list takes any of the trades picked, and any of
@@ -108,6 +108,8 @@ export default function Lists() {
     states?: { key: string; n: number }[]; total: number
   } | null>(null)
   const [pickedTrades, setPickedTrades] = useState<string[]>([])
+  // 0051: a list can take leads from several states (CA and WA in one list)
+  const [pickedStates, setPickedStates] = useState<string[]>([])
   const [pickedSources, setPickedSources] = useState<string[]>([])
 
   const query = `${filter.status}|${filter.kind}|${page}`
@@ -166,7 +168,7 @@ export default function Lists() {
   // the same rules the build will send, so the numbers shown are the numbers built
   const countRules: Record<string, unknown> = {}
   if (form.tier) countRules.tier = form.tier
-  if (form.state) countRules.state = form.state
+  if (pickedStates.length) countRules.state = pickedStates.join(',')
   if (/^[2-9]\d{2}(\s*,\s*[2-9]\d{2})*$/.test(form.areaCode.trim())) countRules.area_code = form.areaCode.trim()
   if (pickedTrades.length) countRules.category = pickedTrades.join(',')
   if (pickedSources.length) countRules.source = pickedSources.join(',')
@@ -180,6 +182,7 @@ export default function Lists() {
     return () => { live = false }
   }, [countKey, reload])
 
+  function pickState(key: string) { if (key && !pickedStates.includes(key)) setPickedStates([...pickedStates, key]) }
   function pickTrade(key: string) { if (key && !pickedTrades.includes(key)) setPickedTrades([...pickedTrades, key]) }
   function pickSource(key: string) { if (key && !pickedSources.includes(key)) setPickedSources([...pickedSources, key]) }
   const countOf = (list: { key: string; n: number }[] | undefined, key: string) => list?.find((x) => x.key === key)?.n ?? 0
@@ -202,7 +205,7 @@ export default function Lists() {
     e.preventDefault()
     setBusy(true); setMsg(null)
     const rules: Record<string, unknown> = {}
-    if (form.state) rules.state = form.state
+    if (pickedStates.length) rules.state = pickedStates.join(',')
     // 0038: the first three digits of the number, one area code or several (305,786)
     if (form.areaCode.trim()) rules.area_code = form.areaCode.trim()
     if (pickedTrades.length) rules.category = pickedTrades.join(',')
@@ -360,14 +363,12 @@ export default function Lists() {
           <label>Tier<select value={form.tier} onChange={(e) => setForm({ ...form, tier: e.target.value })}>
             <option value="">any</option><option>A</option><option>B</option><option>C</option>
           </select></label>
-          <label>State<select value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })}
-            title="Every state with leads in the pool, counted under the other rules picked">
-            <option value="">any</option>
-            {/* the state picked stays on offer even when the other rules leave it no leads */}
-            {form.state && !(counts?.states ?? []).some((s) => s.key === form.state) && (
-              <option value={form.state}>{form.state} (0)</option>
-            )}
-            {(counts?.states ?? []).map((s) => <option key={s.key} value={s.key}>{s.key} ({s.n.toLocaleString()})</option>)}
+          <label>State<select value="" onChange={(e) => pickState(e.target.value)}
+            title="Every state with leads in the pool, counted under the other rules picked; pick as many as you like">
+            <option value="">{pickedStates.length ? 'add another state…' : 'any state — or pick…'}</option>
+            {(counts?.states ?? []).filter((s) => !pickedStates.includes(s.key)).map((s) => (
+              <option key={s.key} value={s.key}>{s.key} ({s.n.toLocaleString()})</option>
+            ))}
           </select></label>
           <label>Area code<input style={{ width: 120 }} value={form.areaCode} onChange={(e) => setForm({ ...form, areaCode: e.target.value })}
             placeholder="305 or 305,786" inputMode="numeric" title="The first three digits of the number; several separated by commas" /></label>
@@ -404,8 +405,18 @@ export default function Lists() {
           </label>
           <button className="btn primary" disabled={busy}>{busy ? 'Building…' : 'Build list'}</button>
         </div>
-        {(pickedTrades.length > 0 || pickedSources.length > 0) && (
+        {(pickedStates.length > 0 || pickedTrades.length > 0 || pickedSources.length > 0) && (
           <div className="pickrow">
+            {pickedStates.length > 0 && (
+              <span className="picks"><span className="muted small">States (any of):</span>
+                {pickedStates.map((k) => (
+                  <span key={k} className="pickchip">{k} <span className="muted">({countOf(counts?.states, k).toLocaleString()})</span>
+                    <button type="button" aria-label={`Remove ${k}`} onClick={() => setPickedStates(pickedStates.filter((x) => x !== k))}>×</button>
+                  </span>
+                ))}
+                <button type="button" className="btn ghost small" onClick={() => setPickedStates([])}>clear</button>
+              </span>
+            )}
             {pickedTrades.length > 0 && (
               <span className="picks"><span className="muted small">Trades (any of):</span>
                 {pickedTrades.map((k) => (

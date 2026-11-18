@@ -68,7 +68,7 @@ export const SHAPE = `{
   "findings": [{"title": "short", "detail": "what the data shows", "evidence": "the numbers behind it"}],
   "where_to_call": [{"segment": "e.g. remodelers in WA with no website", "when": "best hours on their clock, or 'any time'", "why": "evidence"}],
   "agent_matching": [{"agent": "an agent's name from the data", "focus": "what they should be given", "why": "evidence"}],
-  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two letters", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "tries": "0|1|2|3+: dials so far with no pickup, comma separated", "min_score": 0}, "why": "evidence"}],
+  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two-letter codes, comma separated", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry|thumbtack|facebook|yelp, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "tries": "0|1|2|3+: dials so far with no pickup, comma separated", "min_score": 0}, "why": "evidence"}],
   "lessons": [{"traits": ${LESSON_TRAITS}, "effect": "much_more|more|less|much_less|never", "pickup": "more|less|same", "why": "the reason, and what the data says"}],
   "cautions": ["anything the manager should not over-read"]
 }`
@@ -116,7 +116,8 @@ const TEXT = 2000
 const str = (v, max = TEXT) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 const RULES = {
   tier: (v) => /^[ABCS]$/i.test(String(v)) ? String(v).toUpperCase() : null,
-  state: (v) => /^[A-Za-z]{2}$/.test(String(v)) ? String(v).toUpperCase() : null,
+  // 0051: one state, or several (CA,WA)
+  state: (v) => { const s = String(v).toUpperCase().replace(/\s/g, ''); return /^[A-Z]{2}(,[A-Z]{2})*$/.test(s) ? s : null },
   category: (v) => { const s = String(v).toLowerCase().replace(/\s/g, ''); return /^[a-z_]+(,[a-z_]+)*$/.test(s) ? s : null },
   area_code: (v) => { const s = String(v).replace(/\s/g, ''); return /^[2-9]\d{2}(,[2-9]\d{2})*$/.test(s) ? s : null },
   source: (v) => { const s = String(v).toLowerCase().replace(/\s/g, ''); return /^[a-z]+(,[a-z]+)*$/.test(s) ? s : null },
@@ -280,7 +281,7 @@ export const CHAT_RULES = [
 export const CHAT_SHAPE = `{
   "reply": "your answer to the manager",
   "lessons": [{"traits": ${LESSON_TRAITS}, "effect": "much_more|more|less|much_less|never", "pickup": "more|less|same", "why": "the reason, and what the data says"}],
-  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two letters", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "tries": "0|1|2|3+: dials so far with no pickup, comma separated", "min_score": 0}, "why": "evidence"}]
+  "lists": [{"name": "a list name", "rules": {"tier": "A|B|C", "state": "two-letter codes, comma separated", "category": "trade keys, comma separated", "area_code": "305 or 305,786", "source": "gmaps|angi|registry, comma separated", "website_type": "none|social|site", "phone_type": "mobile|landline|voip", "tries": "0|1|2|3+: dials so far with no pickup, comma separated", "min_score": 0}, "why": "evidence"}]
 }`
 
 /** The conversation as Gemini takes it: the floor in the instructions, then the
