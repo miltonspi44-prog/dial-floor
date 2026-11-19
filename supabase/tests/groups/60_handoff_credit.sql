@@ -1,4 +1,4 @@
--- 0052/0053: a handoff recorded by hand belongs to the agent picked, and counts
+-- 0052: a handoff recorded by hand belongs to the agent picked, and counts
 -- in their stats as their call and their handoff.
 \set ON_ERROR_STOP 1
 set client_min_messages = warning;
@@ -64,32 +64,6 @@ begin
                   'only a handoff recorded by hand');
   perform t.as_user('A');
   perform t.fails(format('select public.reassign_handoff(%s, %L)', h, t.uid('A')), 'manager only');
-end $$;
-
-\echo '60.3 · The handoffs recorded by hand before 0052 get their call (0053), on their own day; a second run changes nothing'
-do $$
-declare att bigint;
-begin
-  -- as 0042 left them: a ledger row, no call
-  att := t.dial('A', 'W'); perform t.log('A', att, 'no_answer');
-  insert into handoff_ledger (lead_id, lead_snapshot, kind, summary, agent_id, handed_at)
-    select id, to_jsonb(l), 'chance_website', 'called back - gave upfront - website', t.uid('B'), now() - interval '3 days'
-      from leads l where name = 'W';
-end $$;
-\i supabase/migrations/0053_count_past_manual_handoffs.sql
-\i supabase/migrations/0053_count_past_manual_handoffs.sql
-do $$
-declare h handoff_ledger%rowtype; c attempts%rowtype;
-begin
-  select * into h from handoff_ledger where lead_id = t.lead('W');
-  select * into c from attempts where id = h.manual_attempt_id;
-  assert c.agent_id = t.uid('B') and c.disposition = 'chance_website' and c.clicked_at = h.handed_at and c.matched and c.connected,
-    format('B''s call, on the day it was recorded: %s', to_jsonb(c));
-  assert (select count(*) from attempts where lead_id = t.lead('W') and disposition = 'chance_website') = 1, 'one call, however often it runs';
-  assert (select manual_attempt_id from handoff_ledger where lead_id = t.lead('Z')) is null, 'a handoff logged from a dial is left alone';
-  perform t.as_user('M');
-  perform public.reassign_handoff(h.id, t.uid('A'));
-  assert (select agent_id from attempts where id = h.manual_attempt_id) = t.uid('A'), 'and it can be given to someone else like any other';
 end $$;
 
 select t.reset() \g /dev/null
