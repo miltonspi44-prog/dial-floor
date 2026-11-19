@@ -213,6 +213,9 @@ table.data.team td { vertical-align: middle; }
 .dispbtn.dncbtn { border-color: var(--bad); }
 .popup .followup { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
 .popup .followup label { font-weight: 600; font-size: 13.5px; }
+/* 0052: whose handoff it is */
+.popup.creditform select, .popup.creditform textarea { width: 100%; }
+.popup.creditform .kpilabel { display: block; margin-bottom: 4px; }
 .ratingrow { display: flex; gap: 6px; }
 .ratingrow button {
   width: 42px; height: 38px; font-size: 15px; font-weight: 700;

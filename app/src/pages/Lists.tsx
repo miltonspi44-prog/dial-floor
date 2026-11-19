@@ -77,6 +77,10 @@ const PAGE = 20
 
 export default function Lists() {
   const [agents, setAgents] = useState<Profile[]>([])
+  // 0052: a handoff recorded by hand, waiting for the manager to say whose it is
+  const [credit, setCredit] = useState<{
+    it: ListLead; kind: 'chance_website' | 'sale_closed'; agent: string; note: string; busy: boolean; err: string | null
+  } | null>(null)
   const [agentError, setAgentError] = useState<string | null>(null)
   const [lists, setLists] = useState<ListRow[]>([])
   const [total, setTotal] = useState(0)
@@ -326,14 +330,22 @@ export default function Lists() {
   }
 
   // 0042: a business that called back and gave a chance (or bought) after it was
-  // dialed: the outcome is recorded without a dial, credited to the list's agent
-  async function chance(it: ListLead, l: ListRow, kind: 'chance_website' | 'sale_closed') {
-    const what = kind === 'chance_website' ? 'gave the chance to build their website' : 'closed a sale'
-    const who = l.profiles?.name ?? 'you'
-    const summary = window.prompt(`${it.name} called back and ${what}? It is credited to ${who}, the number is held for good, and the console is told. A note for the handoff (optional):`)
-    if (summary === null) return
-    const { error: e } = await supabase.rpc('record_handoff', { p_lead_id: it.lead_id, p_kind: kind, p_summary: summary || null, p_agent: l.agent_id })
-    if (e) { setItemsErr(e.message); return }
+  // dialed: the outcome is recorded without a dial. 0052: the manager picks whose
+  // it is (two people can share one Zoom number, so it need not be the list's
+  // agent), and it counts in that agent's stats as their call and their handoff.
+  function chance(it: ListLead, l: ListRow, kind: 'chance_website' | 'sale_closed') {
+    setCredit({ it, kind, agent: l.agent_id ?? '', note: '', busy: false, err: null })
+  }
+
+  async function saveCredit() {
+    if (!credit) return
+    if (!credit.agent) { setCredit({ ...credit, err: 'Pick who took the call: the handoff counts in their stats.' }); return }
+    setCredit({ ...credit, busy: true, err: null })
+    const { error: e } = await supabase.rpc('record_handoff', {
+      p_lead_id: credit.it.lead_id, p_kind: credit.kind, p_summary: credit.note.trim() || null, p_agent: credit.agent,
+    })
+    if (e) { setCredit({ ...credit, busy: false, err: e.message }); return }
+    setCredit(null)
     setItemsErr(null)
     if (open) loadItems(open)
     refresh()
@@ -538,8 +550,8 @@ export default function Lists() {
                                       {it.lead_state !== 'suppressed' && it.lead_state !== 'handoff' && (
                                         <>
                                           <button className="btn ghost small" title="Do not call: leaves every list and queue" onClick={() => dnc(it)}>DNC</button>
-                                          <button className="btn ghost small" title="They called back and gave a chance: recorded as a handoff, credited to the list's agent" onClick={() => chance(it, l, 'chance_website')}>Chance given</button>
-                                          <button className="btn ghost small" title="They called back and bought: recorded as a sale, credited to the list's agent" onClick={() => chance(it, l, 'sale_closed')}>Sale</button>
+                                          <button className="btn ghost small" title="They called back and gave a chance: recorded as a handoff for whoever took the call" onClick={() => chance(it, l, 'chance_website')}>Chance given</button>
+                                          <button className="btn ghost small" title="They called back and bought: recorded as a sale for whoever took the call" onClick={() => chance(it, l, 'sale_closed')}>Sale</button>
                                         </>
                                       )}
                                     </td>
@@ -585,6 +597,37 @@ export default function Lists() {
           </div>
         )}
       </div>
+      {credit && (
+        <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !credit.busy) setCredit(null) }}>
+          <div className="popup creditform" role="dialog" aria-modal="true" aria-labelledby="credit-title"
+            onKeyDown={(e) => { if (e.key === 'Escape' && !credit.busy) setCredit(null) }}>
+            <h3 id="credit-title">{credit.kind === 'chance_website' ? 'Chance given' : 'Sale closed'}: {credit.it.name}</h3>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              They called back and {credit.kind === 'chance_website' ? 'gave the chance to build their website' : 'bought'}. It is
+              recorded as a handoff, the number is held for good, and the console is told.
+            </p>
+            <label className="kpilabel" htmlFor="credit-agent">Whose handoff is it?</label>
+            <select id="credit-agent" autoFocus value={credit.agent} disabled={credit.busy}
+              onChange={(e) => setCredit({ ...credit, agent: e.target.value, err: null })}>
+              <option value="">— pick who took the call —</option>
+              {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.role === 'manager' ? ' (manager)' : ''}</option>)}
+            </select>
+            <p className="muted small" style={{ margin: '6px 0 12px' }}>
+              Two people can share one Zoom number, so pick whoever took the callback, not just whoever owns the list.
+              It counts in their numbers as a call, a conversation and a handoff, everywhere a handoff counts.
+            </p>
+            <label className="kpilabel" htmlFor="credit-note">Note for the handoff (optional)</label>
+            <textarea id="credit-note" rows={2} value={credit.note} maxLength={500} disabled={credit.busy}
+              onChange={(e) => setCredit({ ...credit, note: e.target.value })}
+              placeholder={credit.kind === 'chance_website' ? 'called back - gave upfront - website' : 'called back - sale closed'} />
+            {credit.err && <div className="warnline" role="alert">{credit.err}</div>}
+            <div className="actionrow" style={{ marginTop: 12 }}>
+              <button className="btn primary" disabled={credit.busy} onClick={saveCredit}>{credit.busy ? 'Recording…' : 'Record the handoff'}</button>
+              <button className="btn ghost" disabled={credit.busy} onClick={() => setCredit(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

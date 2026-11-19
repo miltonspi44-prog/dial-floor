@@ -148,7 +148,10 @@ begin
     'the hard no on the roofer it rated high is there, with its traits to teach from';
   assert not exists (select 1 from jsonb_array_elements(rows) x where x->>'name' = 'NY Roof Hist'), 'its fair wins are not mistakes';
   assert jsonb_array_length(r->'calibration') >= 1 and r->>'stamped_since' is not null, format('calibration: %s', r->'calibration');
-  assert (select sum((b->>'dials')::int) from jsonb_array_elements(r->'calibration') b) = 2, 'only dials scored before they happened';
+  -- the two dials, and (0052) the two callbacks the hand-recorded chances were logged as (53.4's and this one's),
+  -- each scored before its outcome
+  assert (select sum((b->>'dials')::int) from jsonb_array_elements(r->'calibration') b) = 4, format('only dials scored before they happened: %s', r->'calibration');
+  assert (select sum((b->>'wins')::int) from jsonb_array_elements(r->'calibration') b) = 2, 'and the two chances among them';
   r := public.ai_memory();
   assert jsonb_array_length(r->'misses_30d') >= 2, 'Gemini reads the misses';
   -- 0046: the misses name their leads, so Gemini can look each one up

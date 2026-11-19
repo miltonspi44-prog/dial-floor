@@ -12,6 +12,9 @@ interface LedgerRow {
   outcome_note: string | null
   lead_snapshot: { name?: string; phone_display?: string; phone_norm?: string; addr_city?: string; addr_state?: string }
   profiles: { name: string } | null
+  agent_id: string | null
+  // 0052: the call logged for a handoff recorded by hand; set means it can be given to someone else
+  manual_attempt_id: number | null
 }
 
 /** Your G7-lite: the record of every lead that gave a chance / closed,
@@ -24,10 +27,12 @@ export default function Ledger() {
   // item 46: find one handoff, fix its outcome, carry the lot to your other system
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<number | null>(null)
+  // 0052: who a handoff recorded by hand can be given to
+  const [agents, setAgents] = useState<{ id: string; name: string; role: string }[]>([])
 
   const refresh = useCallback(() => {
     supabase.from('handoff_ledger')
-      .select('id, kind, summary, rating, handed_at, outcome, outcome_note, lead_snapshot, profiles!handoff_ledger_agent_id_fkey(name)')
+      .select('id, kind, summary, rating, handed_at, outcome, outcome_note, lead_snapshot, agent_id, manual_attempt_id, profiles!handoff_ledger_agent_id_fkey(name)')
       .order('handed_at', { ascending: false })
       .limit(500)
       .then(({ data, error: e }) => {
@@ -38,6 +43,19 @@ export default function Ledger() {
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    supabase.from('profiles').select('id, name, role').eq('active', true).order('name')
+      .then(({ data }) => setAgents((data ?? []) as { id: string; name: string; role: string }[]))
+  }, [])
+
+  // 0052: a handoff recorded by hand belongs to whoever took the callback; its call moves with it
+  async function reassign(r: LedgerRow, agent: string) {
+    if (!agent || agent === r.agent_id) return
+    const { data, error } = await supabase.rpc('reassign_handoff', { p_handoff: r.id, p_agent: agent })
+    setToast(error ? error.message : `Now ${(data as { name: string }).name}'s handoff: it counts in their stats`)
+    window.setTimeout(() => setToast(null), 3000)
+    refresh()
+  }
 
   async function keep(r: LedgerRow) {
     const lead = r.lead_snapshot?.name ?? 'a lead'
@@ -112,7 +130,20 @@ export default function Ledger() {
                   <span className="muted small">{fmtPhone(r.lead_snapshot?.phone_display ?? r.lead_snapshot?.phone_norm)} · {r.lead_snapshot?.addr_city}, {r.lead_snapshot?.addr_state}</span>
                 </td>
                 <td>{r.kind === 'chance_website' ? 'Website chance' : 'SEO/receptionist sale'}</td>
-                <td>{r.profiles?.name ?? '—'}</td>
+                <td>
+                  {r.manual_attempt_id != null ? (
+                    <>
+                      <select value={r.agent_id ?? ''} onChange={(e) => reassign(r, e.target.value)}
+                        aria-label={`Whose handoff: ${r.lead_snapshot?.name ?? 'this lead'}`}
+                        title="Recorded by hand: give it to whoever took the callback, and it counts in their stats">
+                        {/* the agent it is credited to stays shown even if they have left */}
+                        {r.agent_id && !agents.some((a) => a.id === r.agent_id) && <option value={r.agent_id}>{r.profiles?.name ?? '—'}</option>}
+                        {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                      <div className="muted small">recorded by hand</div>
+                    </>
+                  ) : (r.profiles?.name ?? '—')}
+                </td>
                 <td style={{ maxWidth: 280 }}>{r.summary ?? <span className="muted">—</span>}</td>
                 <td>{r.rating ?? '—'}</td>
                 <td>
